@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentic-kgps"
-version = "0.4.0"
+version = "0.5.0"
 description = "Knowledge Graph Provenance Service (PA-AKG): read-side evidence chains, lineage, impact and grounded-answer provenance over KGIS/KGCS"
 requires-python = ">=3.11"
 # kg_contracts (Assertion, Evidence, EvidenceRef, Derivation, GraphReader) ships in
@@ -27,6 +27,7 @@ dev = [
     "uvicorn>=0.29",
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
+    "rdflib>=7.0",
 ]
 
 [project.scripts]
