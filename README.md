@@ -32,6 +32,16 @@ svc = ProvenanceService(GraphAssertionIndex(graph_reader), SqliteEvidenceRegistr
 print(svc.explain("as_01J...").summary)
 ```
 
+Verify and correct a generated answer, and compare against baselines:
+
+```python
+from kgps import LexicalVerifier, correct_answer, verify_answer, run_harness
+
+print(verify_answer(answer, svc, LexicalVerifier()).score.faithfulness)
+fixed = correct_answer(answer, svc, LexicalVerifier(), retrieve=my_retriever)
+print(run_harness(cases, catalog, registry).table())   # B0 / B1 / B2
+```
+
 Inter-agent messages use `ProvenanceEnvelope`, which refuses to be built
 without citations, an answer, or an explicit abstention.
 
@@ -48,9 +58,10 @@ kgps-http --port 8765    # REST; or mount kgps.http.create_router(svc) in your a
 ## Status
 
 v0.1.0 wave 1 (provenance query, grounding contracts); v0.2.0 wave 2a
-(upstream contracts adopted); v0.3.0 wave 2b (MCP, HTTP, OpenTelemetry).
-Next: verifier and correction loop (wave 3), retrieval routing and
-evaluation (wave 4). See
+(upstream contracts adopted); v0.3.0 wave 2b (MCP, HTTP, OpenTelemetry,
+KGCS curation decisions); v0.4.0 wave 3 (verifier, drop-the-evidence control,
+correction loop, SUPPORTS proposals); v0.5.0 wave 4 (provenance-gated
+routing, B0/B1/B2 harness, PROV-O export). Next: wave 5 case studies. See
 `llm/plans/2026-10-07-kgps-roadmap.md`.
 
 ## Develop
