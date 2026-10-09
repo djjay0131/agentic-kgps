@@ -61,10 +61,23 @@ def _server_class() -> Any:
         ) from exc
 
 
+def _read_only_annotations() -> Any:
+    """``readOnlyHint`` for every tool (ADR-0001); None if the SDK lacks it."""
+    try:
+        types = importlib.import_module("mcp.types")
+        return types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
+    except (ImportError, AttributeError, TypeError):
+        return None
+
+
 def build_server(service: ProvenanceService | ProvenanceAPI) -> Any:
     api = service if isinstance(service, ProvenanceAPI) else ProvenanceAPI(service)
     server = _server_class()(SERVER_NAME, instructions=INSTRUCTIONS)
-    tool = cast(Callable[[], Callable[[Callable[..., JSON]], Callable[..., JSON]]], server.tool)
+    read_only = _read_only_annotations()
+    decorator = cast(Callable[..., Callable[[Callable[..., JSON]], Callable[..., JSON]]], server.tool)
+
+    def tool() -> Callable[[Callable[..., JSON]], Callable[..., JSON]]:
+        return decorator(annotations=read_only) if read_only is not None else decorator()
 
     @tool()
     def kg_explain(assertion_id: str) -> JSON:

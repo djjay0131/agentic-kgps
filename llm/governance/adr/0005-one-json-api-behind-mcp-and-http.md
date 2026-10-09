@@ -34,8 +34,12 @@ the MCP Python SDK split into two incompatible lines in 2026: `mcp<2`
    for real deployments (KGPS ships no database drivers), or
    `KGPS_EVIDENCE_DB` + `KGPS_ASSERTIONS_JSONL` for a file-backed service. The
    registry is opened through a SQLite `mode=ro` URI, so a misconfigured KGPS
-   cannot write it (ADR-0001), and with `check_same_thread=False` because both
-   servers call the service from worker threads.
+   cannot write it (ADR-0001), with **one connection per thread**
+   (`ReadOnlyRegistry`): both servers call the service from worker threads, and
+   a shared `sqlite3` connection silently returned wrong rows under
+   concurrency (review of #3, D-018). The environment is trusted operator input.
+8. **Tools are annotated read-only** (`readOnlyHint`, `idempotentHint`) and
+   caller-supplied strings recorded on spans are truncated to 256 characters.
 7. **No auth in KGPS.** `kgps-http` binds `127.0.0.1` by default; deployments
    mount `create_router()` inside a host app that owns authentication.
 
@@ -70,8 +74,9 @@ loses the `STORE_ERROR` / `UNKNOWN_ASSERTION` distinction.
 
 ### Risks
 
-- A host-supplied evidence store that is not thread-safe will surface as
-  `STORE_ERROR` gaps under the servers. Documented in `kgps.config`.
+- A host-supplied evidence store (via `KGPS_SERVICE_FACTORY`) must be safe
+  for concurrent reads; a shared sqlite3 connection is not. Documented in
+  `kgps.config`.
 
 ## Impacted Areas
 

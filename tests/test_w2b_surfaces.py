@@ -19,16 +19,24 @@ from kgps.config import (
 
 
 @pytest.fixture
-def registry(tmp_path):
-    """Servers call the service from worker threads (FastAPI threadpool, MCP),
-    so the registry connection must allow cross-thread use, as config.py does."""
-    import sqlite3
+def db_path(tmp_path):
+    return tmp_path / "evidence.db"
 
+
+@pytest.fixture
+def registry(db_path):
+    """KGIS writes the registry (conftest stores the chunk evidence through it)."""
     from kgis.evidence.store import SqliteEvidenceRegistry
 
-    db = tmp_path / "evidence.db"
-    SqliteEvidenceRegistry(str(db))  # KGIS creates the schema
-    return SqliteEvidenceRegistry(sqlite3.connect(db, check_same_thread=False))
+    return SqliteEvidenceRegistry(str(db_path))
+
+
+@pytest.fixture
+def ro_registry(db_path, chunk_evidence):
+    """What the servers use: per-thread read-only connections (config.py, D-018)."""
+    from kgps.config import ReadOnlyRegistry
+
+    return ReadOnlyRegistry(db_path)
 
 
 def mk(**kw):
@@ -36,12 +44,12 @@ def mk(**kw):
 
 
 @pytest.fixture
-def world(registry, chunk_evidence):
+def world(ro_registry, chunk_evidence):
     evs, refs = chunk_evidence
     sup = EvidenceRef(evidence_id=evs[1].evidence_id, relationship=EvidenceRelationship.SUPPORTS)
     claim = mk(predicate="reduces_defects_by", object_value="15%", evidence_refs=(sup,))
     bare = mk(predicate="made_up", object_value="x")
-    svc = ProvenanceService(StaticAssertionCatalog((claim, bare)), registry)
+    svc = ProvenanceService(StaticAssertionCatalog((claim, bare)), ro_registry)
     return svc, claim, bare, evs
 
 
@@ -120,6 +128,25 @@ def test_store_failure_in_lineage_and_successors_is_a_gap_not_an_exception(regis
     assert svc.lineage("a") == () and svc.successors("a") == ()
     body = ProvenanceAPI(svc).lineage("a")
     assert "STORE_ERROR" in {g["kind"] for g in body["gaps"]}
+
+
+def test_concurrent_queries_give_the_sequential_answer(registry, ro_registry, chunk_evidence):
+    """Review finding (D-018): one shared sqlite3 connection across server threads
+    silently returned ungrounded verdicts. Per-thread connections must not."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    evs, _ = chunk_evidence
+    claims = [
+        mk(predicate=f"p{i}", object_value=str(i), evidence_refs=(
+            EvidenceRef(evidence_id=evs[i % len(evs)].evidence_id,
+                        relationship=EvidenceRelationship.SUPPORTS),))
+        for i in range(30)
+    ]
+    api = ProvenanceAPI(ProvenanceService(StaticAssertionCatalog(claims), ro_registry))
+    ids = [c.assertion_id for c in claims] * 40
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(lambda i: api.explain(i)["grounded"], ids))
+    assert all(results)
 
 
 # -- MCP -----------------------------------------------------------------------
@@ -202,7 +229,8 @@ def test_service_from_files_is_read_only(tmp_path, chunk_evidence):
     svc = service_from_env({EVIDENCE_DB_ENV: str(db), ASSERTIONS_ENV: str(jl)})
     assert svc.evidence_chain(a.assertion_id).grounded
     with pytest.raises(Exception, match="readonly"):
-        svc._evidence.put(evs[0])  # ADR-0001: KGPS cannot write the registry
+        svc._evidence._registry().put(evs[0])  # ADR-0001: even the inner registry is ro
+    assert not hasattr(svc._evidence, "put")
 
 
 def test_config_errors(tmp_path):
@@ -217,6 +245,22 @@ def test_config_errors(tmp_path):
     db = tmp_path / "missing.db"
     with pytest.raises(ConfigError, match="not found"):
         service_from_env({EVIDENCE_DB_ENV: str(db), ASSERTIONS_ENV: str(bad)})
+    import sqlite3
+
+    empty = tmp_path / "empty.db"
+    sqlite3.connect(empty).execute("create table other(a)").connection.commit()
+    with pytest.raises(ConfigError, match="no evidence table"):
+        service_from_env({EVIDENCE_DB_ENV: str(empty), ASSERTIONS_ENV: str(bad)})
+    from kgis.evidence.store import SqliteEvidenceRegistry
+
+    real = tmp_path / "real.db"
+    SqliteEvidenceRegistry(str(real))
+    with pytest.raises(ConfigError, match="assertions file not found"):
+        service_from_env({EVIDENCE_DB_ENV: str(real), ASSERTIONS_ENV: str(tmp_path / "x")})
+    with pytest.raises(ConfigError, match=">= 1"):
+        service_from_env(
+            {EVIDENCE_DB_ENV: str(real), ASSERTIONS_ENV: str(bad), "KGPS_MAX_DEPTH": "0"}
+        )
 
 
 def factory_for_test():
@@ -250,7 +294,7 @@ def test_spans_are_emitted_without_payloads(world):
     monkey = trace.get_tracer
     trace.get_tracer = lambda *_a, **_k: tracer  # avoid the global set-once provider
     try:
-        svc, claim, bare, _ = world
+        svc, claim, bare, evs = world
         svc.explain(claim.assertion_id)
         svc.evidence_chain(bare.assertion_id)
         ProvenanceAPI(svc).score_answer(answer_for(claim))
@@ -266,6 +310,15 @@ def test_spans_are_emitted_without_payloads(world):
         if s.attributes.get("kgps.assertion_id") == bare.assertion_id
     ][0]
     assert bare_span.attributes["kgps.blocking_gaps"] == "NO_EVIDENCE_REFS"
+    evidence_text = [ev.content for ev in evs if ev.content]
     for s in exporter.get_finished_spans():  # identifiers and counts only
         for value in s.attributes.values():
             assert "defects fell" not in str(value).lower()
+            assert not any(text in str(value) for text in evidence_text)
+
+
+def test_span_attributes_are_bounded():
+    from kgps.telemetry import MAX_ATTR_LEN, bounded
+
+    assert len(bounded("x" * 10_000)) == MAX_ATTR_LEN + 1
+    assert bounded("as_1") == "as_1"

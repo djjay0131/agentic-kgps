@@ -71,7 +71,8 @@ class ProvenanceAPI:
 
     def lineage(self, assertion_id: str) -> JSON:
         # Through evidence_chain so lookup failures surface as gaps (ADR-0003).
-        chain = self.service.evidence_chain(assertion_id)
+        with span("lineage", {"kgps.assertion_id": assertion_id}):
+            chain = self.service.evidence_chain(assertion_id)
         return {
             "assertion_id": assertion_id,
             "lineage": [n.model_dump(mode="json") for n in chain.lineage],
@@ -79,7 +80,8 @@ class ProvenanceAPI:
         }
 
     def successors(self, assertion_id: str) -> JSON:
-        chain = self.service.evidence_chain(assertion_id, with_lineage=False)
+        with span("successors", {"kgps.assertion_id": assertion_id}):
+            chain = self.service.evidence_chain(assertion_id, with_lineage=False)
         return {
             "assertion_id": assertion_id,
             "successors": list(chain.successors),

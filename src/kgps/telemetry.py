@@ -28,6 +28,14 @@ TRACER_NAME = "kgps"
 
 AttrValue = str | bool | int | float
 
+MAX_ATTR_LEN = 256
+"""Caller-supplied strings (ids, trace ids) are truncated: an agent passing
+text where an id belongs must not ship that text to a telemetry backend."""
+
+
+def bounded(value: str) -> str:
+    return value if len(value) <= MAX_ATTR_LEN else value[:MAX_ATTR_LEN] + "…"
+
 
 def otel_available() -> bool:
     return _otel_trace is not None
@@ -66,7 +74,7 @@ def span(operation: str, attributes: Mapping[str, AttrValue] | None = None) -> I
     tracer = _otel_trace.get_tracer(TRACER_NAME)
     with tracer.start_as_current_span(f"kgps.{operation}") as current:
         for key, value in (attributes or {}).items():
-            current.set_attribute(key, value)
+            current.set_attribute(key, bounded(value) if isinstance(value, str) else value)
         yield current
 
 
@@ -84,8 +92,9 @@ def traced(operation: str, subject_attr: str = "kgps.subject_id") -> Callable[[C
             if _otel_trace is None:
                 return fn(*args, **kwargs)
             attrs: dict[str, AttrValue] = {}
-            if len(args) > 1 and isinstance(args[1], str):
-                attrs[subject_attr] = args[1]
+            subject = args[1] if len(args) > 1 else next(iter(kwargs.values()), None)
+            if isinstance(subject, str):
+                attrs[subject_attr] = subject
             with span(operation, attrs) as current:
                 result = fn(*args, **kwargs)
                 for key, value in _result_attributes(result).items():
