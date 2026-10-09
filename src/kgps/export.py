@@ -84,8 +84,9 @@ class _Doc:
         else:
             n[key] = value
 
-    def agent(self, name: str, software: bool = False) -> str:
-        iri = _iri("agent", name, self.base)
+    def agent(self, name: str, software: bool = False, role: str = "actor") -> str:
+        # Separate namespaces per role, so an actor named like a model never merges with it.
+        iri = _iri(f"agent:{role}", name, self.base)
         self.node(iri, "prov:Agent", *(["prov:SoftwareAgent"] if software else []))
         self.add(iri, "label", name)
         return iri
@@ -95,7 +96,7 @@ class _Doc:
         node = self.node(a_iri, "prov:Entity", "kgps:Assertion")
         a = chain.assertion
         if a is not None:
-            node["kgps:subject"] = a.subject_identity
+            node["kgps:subject"] = {"@id": a.subject_identity}
             node["kgps:predicate"] = a.predicate
             if a.object_identity is not None:
                 node["kgps:object"] = {"@id": a.object_identity} if ":" in a.object_identity else a.object_identity
@@ -105,10 +106,14 @@ class _Doc:
             node["kgps:curationEpoch"] = a.curation_epoch
             node["generatedAtTime"] = a.recorded_at.isoformat()
             if a.authority:
-                self.add(a_iri, "wasAttributedTo", self.agent(a.authority))
+                self.add(a_iri, "wasAttributedTo", self.agent(a.authority, role="authority"))
         node["kgps:grounded"] = chain.grounded
         for gap in chain.gaps:
-            self.add(a_iri, "kgps:gap", f"{gap.kind.value}: {gap.detail}")
+            # Gap *details* can quote store errors or rows; only with include_quotes.
+            literal = f"{gap.kind.value} @ {gap.subject_id}"
+            if self.include_quotes:
+                literal += f": {gap.detail}"
+            self.add(a_iri, "kgps:gap", literal)
         for link in chain.links:
             e_iri = _iri("evidence", link.evidence_id, self.base)
             self.add(a_iri, "wasDerivedFrom", e_iri)
@@ -143,7 +148,7 @@ class _Doc:
                 model = ev.provenance.model
                 if link.model_version:
                     model += f"@{link.model_version}"
-                self.add(e_iri, "wasAttributedTo", self.agent(model, software=True))
+                self.add(e_iri, "wasAttributedTo", self.agent(model, software=True, role="model"))
         for n in chain.lineage:
             if n.parent_ref is None:
                 continue
@@ -152,7 +157,11 @@ class _Doc:
                 else _iri("assertion", n.parent_ref, self.base)
             )
             target = _iri(n.kind, n.ref, self.base)
-            self.node(target, "prov:Entity", f"kgps:{n.kind.capitalize()}")
+            tn = self.node(target, "prov:Entity", f"kgps:{n.kind.capitalize()}")
+            if not n.resolved:
+                tn["kgps:resolved"] = False
+            if n.method:
+                tn.setdefault("kgps:derivationMethod", n.method)
             self.node(parent, "prov:Entity")
             self.add(parent, "wasDerivedFrom", target)
         previous = a_iri
@@ -208,7 +217,7 @@ def graph_to_prov(
     act = _iri("answer", graph.trace_id, base)
     doc.node(act, "prov:Activity", "kgps:AnswerGeneration")
     if produced_by:
-        doc.add(act, "wasAssociatedWith", doc.agent(produced_by, software=True))
+        doc.add(act, "wasAssociatedWith", doc.agent(produced_by, software=True, role="producer"))
     assertion_iris = {aid: doc.chain(chain) for aid, chain in graph.chains.items()}
     for edge in graph.edges:
         if edge.kind.value != "CITES":

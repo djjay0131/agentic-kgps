@@ -13,9 +13,10 @@ contract plus deterministic reference implementations:
   derivation inputs, supersession and shared identities).
 * ``route(query)`` — a rule-based ``RoutingDecision``; ``fuse`` — reciprocal
   rank fusion across modes.
-* ``ProvenanceRouter`` — route → retrieve → fuse → **provenance gate**: items
-  whose evidence chain is not grounded are dropped (``require_grounded``),
-  superseded records are replaced by their current successor.
+* ``ProvenanceRouter`` — route → retrieve → fuse → **provenance gate**:
+  superseded records are replaced by their current successor, then anything
+  not ACTIVE (revoked, rejected; ``require_active``) or not grounded
+  (``require_grounded``) is dropped.
 
 Documents are built from what KGPS can read: the assertion's statement
 (``render``) plus the visible text of its present grounding evidence.
@@ -29,7 +30,7 @@ from collections.abc import Callable, Iterable, Sequence
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-from kg_contracts.assertions import Assertion
+from kg_contracts.assertions import Assertion, CurationStatus
 from pydantic import BaseModel, ConfigDict, Field
 
 from kgps.models import GROUNDING_RELATIONSHIPS
@@ -90,12 +91,21 @@ class AssertionDocuments:
         self._render = render
         self.texts: dict[str, str] = {}
         self.assertions: dict[str, Assertion] = {}
+        self.errors: tuple[str, ...] = ()
         self.refresh()
 
     def refresh(self) -> None:
+        """Rebuild; a failing catalog leaves an empty index plus ``errors`` (ADR-0003)."""
         texts: dict[str, str] = {}
         assertions: dict[str, Assertion] = {}
-        for a in self._catalog.iter_assertions():
+        try:
+            catalog = tuple(self._catalog.iter_assertions())
+        except Exception as exc:  # noqa: BLE001
+            self.texts, self.assertions = {}, {}
+            self.errors = (f"assertion scan failed: {type(exc).__name__}",)
+            return
+        self.errors = ()
+        for a in catalog:
             chain = self._svc.evidence_chain(a.assertion_id, with_lineage=False)
             parts = [self._render(a)]
             for link in chain.links:
@@ -194,16 +204,25 @@ class GraphRetriever:
     """Seed with another retriever, then expand one hop over the graph.
 
     Neighbours: derivation inputs and consumers, supersession links, and
-    assertions sharing a subject or object identity with the seed. A
+    assertions sharing a subject or object identity with the seed (identity
+    groups larger than ``max_identity_group`` are skipped). A
     neighbour scores ``decay`` × its seed's score and records ``via``.
     """
 
     mode = RetrievalMode.GRAPH
 
-    def __init__(self, docs: AssertionDocuments, seed: Retriever, *, decay: float = 0.5) -> None:
+    def __init__(
+        self,
+        docs: AssertionDocuments,
+        seed: Retriever,
+        *,
+        decay: float = 0.5,
+        max_identity_group: int = 50,
+    ) -> None:
         self._docs = docs
         self._seed = seed
         self._decay = decay
+        self._max_group = max_identity_group
         self._neighbours = self._build()
 
     def _build(self) -> dict[str, set[str]]:
@@ -222,7 +241,13 @@ class GraphRetriever:
             if successor and successor in nb:
                 nb[aid].add(successor)
                 nb[successor].add(aid)
+        # Hub identities (a subject shared by thousands of assertions) would
+        # make every member a neighbour of every other: O(n^2). Groups above
+        # ``max_identity_group`` are not expanded; derivation and supersession
+        # edges still are.
         for group in by_identity.values():
+            if len(group) > self._max_group:
+                continue
             for aid in group:
                 nb[aid] |= group - {aid}
         return nb
@@ -298,8 +323,12 @@ class RoutedResult(BaseModel):
     query: str
     decision: RoutingDecision
     items: tuple[RetrievedItem, ...]
+    candidates: tuple[RetrievedItem, ...] = ()
+    """The fused ranking *before* the provenance gate (for retrieval metrics)."""
     dropped_ungrounded: tuple[str, ...] = ()
+    dropped_inactive: tuple[str, ...] = ()
     replaced_superseded: dict[str, str] = Field(default_factory=dict)
+    errors: tuple[str, ...] = ()
 
 
 class ProvenanceRouter:
@@ -311,45 +340,68 @@ class ProvenanceRouter:
         retrievers: Iterable[Retriever],
         *,
         require_grounded: bool = True,
+        require_active: bool = True,
         follow_supersession: bool = True,
         router: Callable[[str], RoutingDecision] = route,
     ) -> None:
         self._svc = svc
         self._by_mode = {r.mode: r for r in retrievers}
         self._require_grounded = require_grounded
+        self._require_active = require_active
         self._follow = follow_supersession
         self._route = router
 
     def retrieve(self, query: str, k: int = 5) -> RoutedResult:
+        """Never raises (ADR-0003): a failing retriever is recorded in ``errors``."""
         decision = self._route(query)
+        errors: list[str] = []
+        used: list[RetrievalMode] = []
         with span("route", {"kgps.modes": ",".join(m.value for m in decision.modes)}):
-            rankings = [
-                self._by_mode[m].retrieve(query, k * 2)
-                for m in decision.modes
-                if m in self._by_mode
-            ]
+            rankings: list[list[RetrievedItem]] = []
+            for m in decision.modes:
+                retriever = self._by_mode.get(m)
+                if retriever is None:
+                    errors.append(f"{m.value}: no retriever configured")
+                    continue
+                try:
+                    rankings.append(list(retriever.retrieve(query, k * 2)))
+                    used.append(m)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{m.value}: {type(exc).__name__}")
             fused = fuse(rankings, k * 2)
             kept: list[RetrievedItem] = []
-            dropped: list[str] = []
+            dropped: dict[str, None] = {}
+            inactive: dict[str, None] = {}
             replaced: dict[str, str] = {}
             seen: set[str] = set()
             for item in fused:
                 aid = item.assertion_id
                 chain = self._svc.evidence_chain(aid, with_lineage=False)
                 if self._follow and chain.current_assertion_id != aid:
-                    replaced[aid] = chain.current_assertion_id
-                    aid = chain.current_assertion_id
-                    chain = self._svc.evidence_chain(aid, with_lineage=False)
+                    succ = self._svc.evidence_chain(chain.current_assertion_id, with_lineage=False)
+                    if succ.assertion is not None:  # never swap in an unresolvable id
+                        replaced[aid] = chain.current_assertion_id
+                        aid, chain = chain.current_assertion_id, succ
                 if aid in seen:
                     continue
+                status = chain.assertion.status if chain.assertion is not None else None
+                if self._require_active and status is not CurationStatus.ACTIVE:
+                    inactive.setdefault(aid, None)
+                    continue
                 if self._require_grounded and not chain.grounded:
-                    dropped.append(aid)
+                    dropped.setdefault(aid, None)
                     continue
                 seen.add(aid)
                 kept.append(item.model_copy(update={"assertion_id": aid, "grounded": chain.grounded}))
                 if len(kept) == k:
                     break
+        if used != list(decision.modes):
+            decision = RoutingDecision(
+                modes=tuple(used),
+                reason=decision.reason + f" (used: {', '.join(m.value for m in used) or 'none'})",
+            )
         return RoutedResult(
-            query=query, decision=decision, items=tuple(kept),
-            dropped_ungrounded=tuple(dropped), replaced_superseded=replaced,
+            query=query, decision=decision, items=tuple(kept), candidates=tuple(fused),
+            dropped_ungrounded=tuple(dropped), dropped_inactive=tuple(inactive),
+            replaced_superseded=replaced, errors=tuple(errors),
         )

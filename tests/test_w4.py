@@ -171,7 +171,10 @@ def test_harness_b2_never_cites_ungrounded_and_recovers_under_perturbation(world
     assert b0p.ungrounded_citation_rate > 0.0
     assert b2.faithfulness >= b0.faithfulness
     table = report.table()
-    assert table.count("\n") == 1 + 6 and "| B2 | hide_gold_evidence |" in table
+    assert table.count("\n") == 1 + 6 + 2 and "| B2 | hide_gold_evidence |" in table
+    # Recall measures retrieval before the gate, so it is comparable across baselines.
+    assert b2.recall_at_k == b0.recall_at_k == 1.0
+    assert 0.0 <= b2p.faithful_answer_rate <= b2p.faithfulness
     json.dumps(report.model_dump(mode="json"))
 
 
@@ -254,3 +257,85 @@ def test_prov_on_api_and_http(world, tmp_path, chunk_evidence):
                           "citations": [{"assertion_id": fifteen.assertion_id}]}]}
     r = c.post("/answers/prov", json=ans)
     assert r.status_code == 200 and "Defects fell" not in r.text
+
+
+# -- review regressions (PR #6) ---------------------------------------------------------
+
+
+def test_hidden_evidence_keeps_the_candidate_path(registry, chunk_evidence):
+    """isinstance Protocol checks ignore __getattr__: forwarding silently disabled
+    candidate-joined evidence for every assertion under perturbation."""
+    from kgps.ports import CandidateRefLookup, EvidenceSubjectLookup
+
+    evs, _ = chunk_evidence
+    h = HiddenEvidence(registry, {evs[0].evidence_id})
+    assert isinstance(h, CandidateRefLookup) and isinstance(h, EvidenceSubjectLookup)
+    assert h.subjects_for(evs[0].evidence_id) == []
+
+
+def test_gate_drops_revoked_records(world, registry):
+    from kg_contracts.assertions import CurationStatus
+
+    svc, catalog, review, fifteen, *_ = world
+    revoked = fifteen.model_copy(update={"assertion_id": "as_revoked",
+                                         "status": CurationStatus.REVOKED})
+    cat = StaticAssertionCatalog((revoked, review))
+    svc2 = ProvenanceService(cat, registry)
+    docs = AssertionDocuments(cat, svc2)
+    r = ProvenanceRouter(svc2, [SparseRetriever(docs)]).retrieve('defects fell by "15%"', 5)
+    assert "as_revoked" in r.dropped_inactive
+    assert "as_revoked" not in {i.assertion_id for i in r.items}
+    assert "as_revoked" in {i.assertion_id for i in r.candidates}
+
+
+def test_router_and_index_never_raise(world):
+    svc, catalog, *_ = world
+    docs = AssertionDocuments(catalog, svc)
+
+    class Broken:
+        mode = RetrievalMode.SPARSE
+
+        def retrieve(self, query, k):
+            raise RuntimeError("index down")
+
+    r = ProvenanceRouter(svc, [Broken(), DenseRetriever(docs)]).retrieve('"15%" why', 3)
+    assert any("sparse: RuntimeError" in e for e in r.errors)
+    assert any("graph: no retriever" in e for e in r.errors)
+    assert r.decision.modes == (RetrievalMode.DENSE,) and r.items
+
+    class BadCatalog:
+        def get_assertion(self, _):
+            return None
+
+        def iter_assertions(self):
+            raise OSError("db gone")
+
+    bad = AssertionDocuments(BadCatalog(), svc)
+    assert bad.texts == {} and bad.errors
+
+
+def test_hub_identities_are_not_expanded(registry, chunk_evidence):
+    evs, refs = chunk_evidence
+    hub = new_identity_id("g")
+    many = [mk(subject_identity=hub, predicate=f"p{i}", object_value=str(i),
+               evidence_refs=(refs[0],)) for i in range(60)]
+    cat = StaticAssertionCatalog(many)
+    svc = ProvenanceService(cat, registry)
+    docs = AssertionDocuments(cat, svc)
+    g = GraphRetriever(docs, SparseRetriever(docs), max_identity_group=50)
+    assert all(not n for n in g._neighbours.values())
+
+
+def test_export_keeps_gap_details_and_text_out_by_default(registry):
+    from kgps.export import chain_to_prov
+
+    class Exploding:
+        def get(self, _):
+            raise RuntimeError("row=('In our study of 40 projects, defects fell by 15%',)")
+
+    a = mk(evidence_refs=(EvidenceRef(evidence_id="ev_x", relationship=SUP),))
+    svc = ProvenanceService(StaticAssertionCatalog((a,)), Exploding())
+    text = json.dumps(chain_to_prov(svc.evidence_chain(a.assertion_id)))
+    assert "defects fell" not in text and "STORE_ERROR @ ev_x" in text
+    assert "defects fell" in json.dumps(
+        chain_to_prov(svc.evidence_chain(a.assertion_id), include_quotes=True))

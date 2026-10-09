@@ -24,21 +24,34 @@ reproducible here without model weights, and every reported number computed.
    rankings fused by reciprocal rank (deterministic tie-break). The decision
    carries a human-readable reason.
 3. **Provenance gate** (what makes B2 differ from B1) — `ProvenanceRouter`
-   drops items whose chain is not grounded and replaces superseded records with
-   their current successor before anything reaches a generator.
+   replaces superseded records with their current successor (only when the
+   successor resolves), then drops anything not ACTIVE (revoked, rejected) or
+   not grounded, before anything reaches a generator. It never raises: a
+   failing or missing retriever is recorded in `errors` and the decision's
+   modes are rewritten to those actually used. Graph expansion skips identity
+   groups above `max_identity_group` (hub identities would be O(n²)).
 4. **Harness** — the same cases through B0 (dense), B1 (sparse+dense RRF) and
    B2 (routed + gate + verify + correct), each also under a
    `hide_gold_evidence` perturbation (evidence disappears after indexing).
-   Metrics are computed: recall@k, gold-citation precision, chain completeness,
-   faithfulness (verifier of ADR-0007), abstention rate, ungrounded-citation
-   rate. Generators are callables; `ExtractiveGenerator` is the deterministic
+   Metrics are computed: recall@k (on the ranking **before** the gate, so it
+   measures retrieval for every baseline), gold-citation precision, chain
+   completeness, faithfulness (verifier of ADR-0007), ungrounded-citation rate —
+   these over answered cases — plus abstention rate and **faithful answer rate
+   over all cases** (abstention = 0), so abstaining cannot flatter a system.
+   The perturbation hides evidence content (`get` → None) but keeps refs and
+   the candidate path (`HiddenEvidence` implements the optional registry
+   methods explicitly: runtime Protocol checks ignore `__getattr__`). Evidence
+   shared with non-gold assertions disappears for them too — as when a source
+   really goes away. Generators are callables; `ExtractiveGenerator` is the deterministic
    floor.
 5. **PROV-O JSON-LD export** — output spans, assertions, evidence, agents
    (actors; models as `prov:SoftwareAgent` with version), qualified derivations
    with the KG relationship, lineage, supersession as `prov:wasRevisionOf`,
-   KGCS decisions as activities, gaps as literals. IRIs are `urn:kgps:<kind>:<id>`
-   by default (configurable base). Evidence text, quotes and answer text are
-   excluded unless `include_quotes` is set. Validated by parsing with rdflib in
+   KGCS decisions as activities, gaps as `KIND @ subject` literals. IRIs are
+   `urn:kgps:<kind>:<id>` by default (configurable base); agents are namespaced
+   by role (actor, authority, model, producer). Evidence text, quotes, answer
+   text **and gap details** (which can quote store errors) are excluded unless
+   `include_quotes` is set. Validated by parsing with rdflib in
    tests.
 
 ## Rationale

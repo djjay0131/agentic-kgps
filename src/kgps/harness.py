@@ -24,7 +24,7 @@ import re
 from collections.abc import Callable, Iterable, Sequence
 from enum import StrEnum
 
-from kg_contracts.evidence import Evidence
+from kg_contracts.evidence import Evidence, EvidenceRef, EvidenceRelationship
 from pydantic import BaseModel, ConfigDict, Field
 
 from kgps.correct import correct_answer
@@ -109,7 +109,15 @@ class ExtractiveGenerator:
 
 
 class HiddenEvidence:
-    """An ``EvidenceLookup`` that hides some evidence ids (perturbation)."""
+    """An ``EvidenceLookup`` that hides some evidence ids (perturbation).
+
+    The optional registry methods are defined explicitly, not forwarded with
+    ``__getattr__``: ``ProvenanceService`` detects them with runtime Protocol
+    ``isinstance`` checks, which ignore ``__getattr__``, so forwarding would
+    silently disable the candidate-evidence path for *every* assertion
+    (review of #6). Refs still point at hidden ids (the source went away; the
+    pointer did not) — ``get`` returning ``None`` is the perturbation.
+    """
 
     def __init__(self, inner: EvidenceLookup, hidden: Iterable[str]) -> None:
         self._inner = inner
@@ -118,8 +126,24 @@ class HiddenEvidence:
     def get(self, evidence_id: str) -> Evidence | None:
         return None if evidence_id in self._hidden else self._inner.get(evidence_id)
 
-    def __getattr__(self, name: str) -> object:  # refs_for / subjects_for / redaction
-        return getattr(self._inner, name)
+    def refs_for(
+        self, subject_id: str, relationship: EvidenceRelationship | None = None
+    ) -> list[EvidenceRef]:
+        fn = getattr(self._inner, "refs_for", None)
+        return list(fn(subject_id, relationship)) if fn is not None else []
+
+    def subjects_for(
+        self, evidence_id: str, relationship: EvidenceRelationship | None = None
+    ) -> list[str]:
+        fn = getattr(self._inner, "subjects_for", None)
+        if fn is None or evidence_id in self._hidden:
+            return []
+        return list(fn(evidence_id, relationship))
+
+    def redaction(self, evidence_id: str) -> tuple[str | None, str | None] | None:
+        fn = getattr(self._inner, "redaction", None)
+        result: tuple[str | None, str | None] | None = fn(evidence_id) if fn is not None else None
+        return result
 
 
 class CaseResult(BaseModel):
@@ -150,6 +174,9 @@ class BaselineSummary(BaseModel):
     faithfulness: float
     abstention_rate: float
     ungrounded_citation_rate: float
+    faithful_answer_rate: float = 0.0
+    """Over *all* cases, abstentions counting 0: answered-only metrics alone
+    would let a system look better by abstaining."""
 
 
 class HarnessReport(BaseModel):
@@ -167,14 +194,20 @@ class HarnessReport(BaseModel):
         )
 
     def table(self) -> str:
-        head = "| baseline | perturbation | recall@k | gold-cite precision | chain completeness | faithfulness | abstention | ungrounded cites |"
-        rows = [head, "|---|---|---|---|---|---|---|---|"]
+        head = (
+            "| baseline | perturbation | recall@k | gold-cite precision* | chain completeness* "
+            "| faithfulness* | faithful (all cases) | abstention | ungrounded cites* |"
+        )
+        rows = [head, "|---|---|---|---|---|---|---|---|---|"]
         for s in self.summaries:
             rows.append(
                 f"| {s.baseline.value} | {s.perturbation.value} | {s.recall_at_k:.2f} | "
                 f"{s.gold_citation_precision:.2f} | {s.chain_completeness:.2f} | "
-                f"{s.faithfulness:.2f} | {s.abstention_rate:.2f} | {s.ungrounded_citation_rate:.2f} |"
+                f"{s.faithfulness:.2f} | {s.faithful_answer_rate:.2f} | {s.abstention_rate:.2f} | "
+                f"{s.ungrounded_citation_rate:.2f} |"
             )
+        rows.append("")
+        rows.append("\\* over answered cases only; read with the abstention rate.")
         return "\n".join(rows)
 
 
@@ -213,6 +246,11 @@ def run_harness(
     gen = generator or ExtractiveGenerator()
     ver = verifier or LexicalVerifier()
     results: list[CaseResult] = []
+    # Indexes are built once and see the corpus as it was: the perturbation
+    # happens at read time, like a source going away after indexing.
+    docs = AssertionDocuments(catalog, ProvenanceService(catalog, evidence))
+    sparse, dense = SparseRetriever(docs), DenseRetriever(docs, embed)
+    graph = GraphRetriever(docs, sparse)
     for pert in perturbations:
         for case in cases:
             ev: EvidenceLookup = evidence
@@ -225,27 +263,27 @@ def run_harness(
                 }
                 ev = HiddenEvidence(evidence, hidden)
             svc = ProvenanceService(catalog, ev)
-            # Indexes see the corpus as it was (the perturbation happens at
-            # read time, like a source going away after indexing).
-            docs = AssertionDocuments(catalog, ProvenanceService(catalog, evidence))
-            sparse, dense = SparseRetriever(docs), DenseRetriever(docs, embed)
             for b in Baseline:
                 trace = f"{case.case_id}:{b.value}:{pert.value}"
                 if b is Baseline.B0:
                     items = dense.retrieve(case.question, k)
+                    ranked = items
                 elif b is Baseline.B1:
                     items = fuse([sparse.retrieve(case.question, k * 2),
                                   dense.retrieve(case.question, k * 2)], k)
+                    ranked = items
                 else:
-                    router = ProvenanceRouter(
-                        svc, [sparse, dense, GraphRetriever(docs, sparse)]
+                    routed = ProvenanceRouter(svc, [sparse, dense, graph]).retrieve(
+                        case.question, k
                     )
-                    items = list(router.retrieve(case.question, k).items)
+                    items = list(routed.items)
+                    # Recall measures the retriever, so it is taken before the gate.
+                    ranked = list(routed.candidates[:k])
                 passages = _passages(svc, items, docs)
                 answer: GroundedAnswer | None = gen(case.question, passages, trace)
                 if b is Baseline.B2 and answer is not None:
                     answer = correct_answer(answer, svc, ver).answer
-                results.append(_score_case(case, b, pert, items, answer, svc, ver, k))
+                results.append(_score_case(case, b, pert, ranked, answer, svc, ver, k))
     return HarnessReport(
         k=k, verifier=f"{ver.name}@{ver.version}", generator=type(gen).__name__,
         results=tuple(results), summaries=_summarise(results),
@@ -298,5 +336,6 @@ def _summarise(results: Sequence[CaseResult]) -> tuple[BaselineSummary, ...]:
             ungrounded_citation_rate=(
                 sum(r.ungrounded_citations for r in answered) / total_cites if total_cites else 0.0
             ),
+            faithful_answer_rate=_mean([0.0 if r.abstained else r.faithfulness for r in rs]),
         ))
     return tuple(out)
