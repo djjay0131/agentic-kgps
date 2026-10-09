@@ -337,7 +337,7 @@ class ProvenanceService:
         decisions: list[CurationDecision] = []
         for record in records:
             try:
-                decisions.append(CurationDecision.from_record(record))
+                decisions.append(CurationDecision.from_record(record, assertion_id))
             except Exception as exc:  # noqa: BLE001 — a malformed record is a gap
                 gaps.append(
                     ProvenanceGap(
@@ -656,9 +656,10 @@ def _summarise(chain: EvidenceChain) -> str:
         )
     for d in chain.decisions:
         when = f" at {d.recorded_at.isoformat()}" if d.recorded_at else ""
-        extra = []
+        extra = [f"this assertion: {d.role}"] if d.role else []
         if d.review_action:
-            extra.append(f"review {d.review_action}/{d.review_status}")
+            status = f"/{d.review_status}" if d.review_status else ""
+            extra.append(f"review {d.review_action}{status}")
         if d.consulted_adviser:
             extra.append("adviser consulted")
         tail = f" ({', '.join(extra)})" if extra else ""

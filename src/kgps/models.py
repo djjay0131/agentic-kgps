@@ -153,10 +153,15 @@ class LineageNode(BaseModel):
 class CurationDecision(BaseModel):
     """A KGCS curation decision that touched an assertion (semantic audit, KGCS #48).
 
-    A read-side projection of ``kgcs`` ``AssertionSemanticAuditRecord`` /
-    ``SemanticAuditRecord``, built by duck typing so KGPS does not depend on
-    the agentic-kgcs package (ADR-0002, decision D-019). Only decision
-    metadata is kept; adviser prompts and replay inputs stay in KGCS.
+    A read-side projection of a KGCS ``AssertionSemanticAuditRecord`` (or ER
+    ``SemanticAuditRecord``), given either as the stored JSON ``dict`` or as a
+    typed object. Built by duck typing so KGPS does not depend on the
+    agentic-kgcs package (ADR-0002, ADR-0006). Only decision metadata is kept;
+    adviser prompts and replay inputs stay in KGCS.
+
+    ``role`` says how the explained assertion took part: ``prior`` (the record
+    the decision acted on, e.g. the superseded one), ``resulting`` (the record
+    it produced) or ``affected`` (named, neither of those).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -171,30 +176,58 @@ class CurationDecision(BaseModel):
     review_action: str | None = None
     review_status: str | None = None
     recorded_at: datetime | None = None
+    role: str | None = None
 
     @classmethod
-    def from_record(cls, record: Any) -> "CurationDecision":
-        final = getattr(record, "final", None)
-        review = getattr(record, "review", None)
-        kind = getattr(record, "decision_kind", "unknown")
+    def from_record(cls, record: Any, assertion_id: str | None = None) -> "CurationDecision":
+        final = _get(record, "final")
+        review = _get(record, "review")
+        kind = _get(record, "decision_kind") or "unknown"
+        # Assertion decisions carry `final.kind`; ER decisions `final.action`.
+        final_kind = _get(final, "kind")
+        if final_kind is None:
+            final_kind = _get(final, "action")
+        assessments = _get(record, "assessments") or ()
         return cls(
-            audit_id=str(getattr(record, "audit_id", "")),
-            decision_kind=str(getattr(kind, "value", kind)),
-            final_kind=_str_or_none(getattr(final, "kind", None)),
-            rationale=str(getattr(final, "rationale", "") or ""),
-            trace_id=str(getattr(record, "trace_id", "") or ""),
-            plan_id=getattr(record, "plan_id", None),
-            consulted_adviser=bool(getattr(record, "assessments", ())),
-            review_action=_str_or_none(getattr(review, "action", None)),
-            review_status=_str_or_none(getattr(review, "status", None)),
-            recorded_at=getattr(record, "recorded_at", None),
+            audit_id=str(_get(record, "audit_id") or ""),
+            decision_kind=str(_enum_value(kind)),
+            final_kind=_str_or_none(final_kind),
+            rationale=str(_get(final, "rationale") or ""),
+            trace_id=str(_get(record, "trace_id") or ""),
+            plan_id=_get(record, "plan_id"),
+            consulted_adviser=any(not _get(x, "abstained") for x in assessments),
+            review_action=_str_or_none(_get(review, "action")),
+            review_status=_str_or_none(_get(review, "status")),
+            recorded_at=_get(record, "recorded_at"),
+            role=_role(record, assertion_id),
         )
 
 
-def _str_or_none(value: object) -> str | None:
-    if value is None:
+def _get(obj: Any, key: str) -> Any:
+    if obj is None:
         return None
-    return str(getattr(value, "value", value))
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _str_or_none(value: object) -> str | None:
+    return None if value is None else str(_enum_value(value))
+
+
+def _role(record: Any, assertion_id: str | None) -> str | None:
+    if assertion_id is None:
+        return None
+    replay = _get(record, "replay_inputs")
+    if _get(_get(replay, "old_assertion"), "assertion_id") == assertion_id:
+        return "prior"
+    if _get(_get(replay, "new_assertion"), "assertion_id") == assertion_id:
+        return "resulting"
+    return "affected"
 
 
 class EvidenceChain(BaseModel):

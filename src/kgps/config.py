@@ -12,7 +12,7 @@ Resolution order:
 
 ``KGPS_AUDIT_DB`` optionally names an agentic-kgcs durable audit database;
 ``explain`` then reports which curation decision put each assertion there
-(needs the ``kgcs`` package importable; decision D-019).
+(read directly, no ``kgcs`` import; decision D-019, ADR-0006).
 
 ``KGPS_MAX_DEPTH`` optionally bounds lineage/supersession walks (>= 1).
 
@@ -26,6 +26,7 @@ and calls whatever module it names, exactly like a WSGI/ASGI app path.
 """
 
 import importlib
+import json
 import os
 import sqlite3
 import threading
@@ -134,44 +135,68 @@ class ReadOnlyRegistry:
 
 
 class ReadOnlyAudit:
-    """agentic-kgcs ``SqliteSemanticAuditSink`` per thread, each ``mode=ro``.
+    """Read KGCS's durable semantic audit store directly, ``mode=ro``, per thread.
 
-    Satisfies ``kgps.ports.CurationAuditLookup``. KGPS never records audit
-    (that would be a write, ADR-0001); it only reads ``records_for_assertion``.
+    Satisfies ``kgps.ports.CurationAuditLookup`` and returns the stored record
+    JSON as ``dict``s, which ``CurationDecision.from_record`` projects. It does
+    not instantiate KGCS's ``SqliteSemanticAuditSink``: that is a *writer*
+    whose constructor runs DDL, so any KGCS schema addition would make a
+    read-only open fail (review of agentic-kgps#4; ADR-0006). The only
+    coupling is the two table names and their join columns, which mirror
+    ``SqliteSemanticAuditSink._join_refs``. No ``kgcs`` import is needed.
     """
+
+    RECORDS = "semantic_audit_records"
+    ASSERTION_REFS = "semantic_audit_assertions"
+    _QUERY = (
+        f"SELECT r.record_json FROM {RECORDS} r "
+        f"JOIN {ASSERTION_REFS} ref ON ref.audit_id = r.audit_id "
+        "WHERE ref.assertion_id = ? ORDER BY r.seq"
+    )
 
     def __init__(self, path: str | Path) -> None:
         p = Path(path)
         if not p.is_file():
             raise ConfigError(f"curation audit database not found: {p}")
-        try:
-            module = importlib.import_module("kgcs.persistence.sqlite")
-        except ImportError as exc:
-            raise ConfigError(
-                f"{AUDIT_DB_ENV} needs the agentic-kgcs package (kgcs) importable"
-            ) from exc
-        self._sink_cls = module.SqliteSemanticAuditSink
         self._uri = f"{p.resolve().as_uri()}?mode=ro"
-        self._path = p
         self._local = threading.local()
-        self._sink()  # fail fast on a missing or foreign schema
+        self._lock = threading.Lock()
+        self._conns: list[sqlite3.Connection] = []
+        conn = sqlite3.connect(self._uri, uri=True)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+        except sqlite3.DatabaseError as exc:
+            raise ConfigError(f"{p} is not a readable SQLite database: {exc}") from exc
+        finally:
+            conn.close()
+        missing = {self.RECORDS, self.ASSERTION_REFS} - tables
+        if missing:
+            raise ConfigError(
+                f"{p} is not a KGCS semantic audit store (missing {', '.join(sorted(missing))})"
+            )
 
-    def _sink(self) -> Any:
-        sink = getattr(self._local, "sink", None)
-        if sink is None:
-            conn = sqlite3.connect(self._uri, uri=True)
-            try:
-                sink = self._sink_cls(conn)
-            except (sqlite3.Error, RuntimeError, ValueError) as exc:
-                conn.close()
-                raise ConfigError(
-                    f"{self._path} is not a readable KGCS semantic audit store: {exc}"
-                ) from exc
-            self._local.sink = sink
-        return sink
+    def _conn(self) -> sqlite3.Connection:
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            # Used only by this thread; check_same_thread=False just lets close() run.
+            conn = sqlite3.connect(self._uri, uri=True, check_same_thread=False)
+            self._local.conn = conn
+            with self._lock:
+                self._conns.append(conn)
+        return conn
 
     def records_for_assertion(self, assertion_id: str) -> list[object]:
-        return list(self._sink().records_for_assertion(assertion_id))
+        rows = self._conn().execute(self._QUERY, (assertion_id,)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def close(self) -> None:
+        with self._lock:
+            conns, self._conns = self._conns, []
+        for conn in conns:
+            conn.close()
 
 
 def open_registry_readonly(path: str | Path) -> ReadOnlyRegistry:

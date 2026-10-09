@@ -96,24 +96,114 @@ def test_audit_failures_are_store_errors(registry, grounded):
     assert kinds == [GapKind.STORE_ERROR]
 
 
-def test_real_kgcs_record_projects_and_round_trips_through_a_readonly_store(tmp_path):
+def _hand_built_store(db, records):
+    """The two KGCS tables KGPS reads, built without kgcs (mirrors its DDL)."""
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE semantic_audit_records (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "audit_id TEXT NOT NULL UNIQUE, decision_kind TEXT NOT NULL, trace_id TEXT NOT NULL, "
+        "plan_id TEXT, recorded_at TEXT, record_json TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE semantic_audit_assertions (audit_id TEXT NOT NULL, assertion_id TEXT NOT NULL)"
+    )
+    for rec in records:
+        conn.execute(
+            "INSERT INTO semantic_audit_records "
+            "(audit_id, decision_kind, trace_id, record_json) VALUES (?, ?, ?, ?)",
+            (rec["audit_id"], rec["decision_kind"], rec["trace_id"], json.dumps(rec)),
+        )
+        for aid in rec["assertion_ids"]:
+            conn.execute("INSERT INTO semantic_audit_assertions VALUES (?, ?)",
+                         (rec["audit_id"], aid))
+    conn.commit()
+    conn.close()
+
+
+def test_readonly_audit_reads_real_record_json_without_kgcs(tmp_path, registry, chunk_evidence):
+    from kg_contracts.evidence import EvidenceRef as Ref
+
+    from kgps.config import ASSERTIONS_ENV, AUDIT_DB_ENV, EVIDENCE_DB_ENV, service_from_env
+
+    rec = json.loads(FIXTURE.read_text())
+    old_id, new_id = rec["assertion_ids"]
+    db = tmp_path / "audit.db"
+    _hand_built_store(db, [rec])
+
+    evs, _ = chunk_evidence
+    from kgis.evidence.store import SqliteEvidenceRegistry
+
+    evdb = tmp_path / "ev.db"
+    SqliteEvidenceRegistry(str(evdb)).put_many(evs)
+    ref = Ref(evidence_id=evs[0].evidence_id, relationship=EvidenceRelationship.SUPPORTS)
+    old = make_assertion(evidence_refs=(ref,)).model_copy(
+        update={"assertion_id": old_id, "source_candidate_ids": ("c",)})
+    new = make_assertion(evidence_refs=(ref,)).model_copy(
+        update={"assertion_id": new_id, "source_candidate_ids": ("c",)})
+    jl = tmp_path / "a.jsonl"
+    jl.write_text(old.model_dump_json() + "\n" + new.model_dump_json() + "\n")
+
+    svc = service_from_env(
+        {EVIDENCE_DB_ENV: str(evdb), ASSERTIONS_ENV: str(jl), AUDIT_DB_ENV: str(db)}
+    )
+    old_exp, new_exp = svc.explain(old_id), svc.explain(new_id)
+    (d_old,), (d_new,) = old_exp.chain.decisions, new_exp.chain.decisions
+    assert (d_old.decision_kind, d_old.final_kind) == ("ASSERTION", "SUPERSESSION")
+    assert d_old.role == "prior" and d_new.role == "resulting"
+    assert d_old.recorded_at is not None and d_old.consulted_adviser
+    assert "this assertion: prior" in old_exp.summary
+    assert "this assertion: resulting" in new_exp.summary
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        svc._audit._conn().execute("DELETE FROM semantic_audit_records")
+    svc._audit.close()
+
+
+def test_er_records_and_abstaining_advisers_project_honestly():
+    er = {
+        "audit_id": "au_er", "decision_kind": "ER", "trace_id": "t",
+        "final": {"action": "MERGE", "rationale": "same paper"},
+        "assessments": [{"abstained": True}], "review": {"action": "APPROVE"},
+    }
+    d = CurationDecision.from_record(er, "as_1")
+    assert (d.decision_kind, d.final_kind, d.role) == ("ER", "MERGE", "affected")
+    assert d.consulted_adviser is False  # every adviser abstained
+    assert d.review_status is None
+
+
+def test_unknown_assertion_gets_no_audit_gap(registry):
+    svc = ProvenanceService(StaticAssertionCatalog(()), registry, audit=Audit({}))
+    assert [g.kind for g in svc.evidence_chain("nope").gaps] == [GapKind.UNKNOWN_ASSERTION]
+
+
+def test_mixed_good_and_bad_records(registry, grounded):
+    aid = grounded.assertion_id
+    bad = SimpleNamespace(audit_id="au_x", recorded_at="not a date")
+    svc = ProvenanceService(
+        StaticAssertionCatalog((grounded,)), registry,
+        audit=Audit({aid: [record(aid), bad]}),
+    )
+    chain = svc.evidence_chain(aid)
+    assert [d.audit_id for d in chain.decisions] == ["au_1"]
+    assert [g.kind for g in chain.gaps] == [GapKind.STORE_ERROR]
+
+
+def test_real_kgcs_writer_store_is_readable(tmp_path):
     kgcs_audit = pytest.importorskip("kgcs.observability.semantic_audit")
     kgcs_sqlite = pytest.importorskip("kgcs.persistence.sqlite")
-    from kgps.config import AUDIT_DB_ENV, ReadOnlyAudit
+    from kgps.config import ReadOnlyAudit
 
     rec = kgcs_audit.AssertionSemanticAuditRecord.model_validate_json(FIXTURE.read_text())
     db = tmp_path / "audit.db"
-    sink = kgcs_sqlite.SqliteSemanticAuditSink(sqlite3.connect(db))
-    sink.record(rec)
-
+    kgcs_sqlite.SqliteSemanticAuditSink(sqlite3.connect(db)).record(rec)
     ro = ReadOnlyAudit(db)
     (got,) = ro.records_for_assertion(rec.assertion_ids[0])
-    d = CurationDecision.from_record(got)
-    assert d.audit_id == rec.audit_id and d.final_kind == "SUPERSESSION"
-    assert d.decision_kind == "ASSERTION" and d.consulted_adviser
-    with pytest.raises(Exception, match="readonly"):
-        ro._sink().record(rec.model_copy(update={"audit_id": "au_other"}))
-    assert AUDIT_DB_ENV == "KGPS_AUDIT_DB"
+    d = CurationDecision.from_record(got, rec.assertion_ids[0])
+    assert d.audit_id == rec.audit_id and d.final_kind == "SUPERSESSION" and d.role == "prior"
+    # Same projection from the typed object KGCS itself returns.
+    typed = kgcs_sqlite.SqliteSemanticAuditSink(sqlite3.connect(db)).records_for_assertion(
+        rec.assertion_ids[0])[0]
+    assert CurationDecision.from_record(typed, rec.assertion_ids[0]) == d
+    ro.close()
 
 
 def test_audit_config_errors(tmp_path):
@@ -121,3 +211,7 @@ def test_audit_config_errors(tmp_path):
 
     with pytest.raises(ConfigError, match="not found"):
         ReadOnlyAudit(tmp_path / "nope.db")
+    other = tmp_path / "other.db"
+    sqlite3.connect(other).execute("create table x(a)").connection.commit()
+    with pytest.raises(ConfigError, match="missing semantic_audit_assertions"):
+        ReadOnlyAudit(other)
