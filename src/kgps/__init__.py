@@ -7,6 +7,7 @@ generated output that cites them. Read-only by construction (ADR-0001).
 """
 
 from kgps.api import ProvenanceAPI
+from kgps.correct import CorrectionAction, CorrectionResult, correct_answer
 from kgps.grounding import (
     AgentRole,
     AnswerScore,
@@ -44,10 +45,35 @@ from kgps.ports import (
 )
 from kgps.service import ProvenanceService
 from kgps.spans import parse_span, span_for
+from kgps.verify import (
+    AnswerVerification,
+    Judgement,
+    LexicalVerifier,
+    LLMJudgeVerifier,
+    SupportsProposal,
+    Verdict,
+    VerificationScore,
+    Verifier,
+    propose_supports,
+    verify_answer,
+)
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
+    "AnswerVerification",
+    "CorrectionAction",
+    "CorrectionResult",
+    "Judgement",
+    "LLMJudgeVerifier",
+    "LexicalVerifier",
+    "SupportsProposal",
+    "Verdict",
+    "VerificationScore",
+    "Verifier",
+    "correct_answer",
+    "propose_supports",
+    "verify_answer",
     "AgentRole",
     "AnswerScore",
     "AssertionCatalog",

@@ -26,11 +26,11 @@ Design authority: `llm/specs/2026-10-07-kgps-design.md` §9.
 
 ## Wave 3 — verifier and correction
 
-- [ ] `Verifier` protocol; NLI + LLM-judge implementations; human-calibration set
-- [ ] Drop-the-evidence control
-- [ ] Correction loop (re-retrieve / regenerate / abstain)
-- [ ] `SUPPORTS` upgrade proposals as KGCS `NEW_EVIDENCE` triggers
-- [ ] Faithfulness + minimality metrics
+- [x] `Verifier` protocol; lexical baseline + LLM-judge (ADR-0007). NLI model and human-calibration set → wave 5 (D-028)
+- [x] Drop-the-evidence control
+- [x] Correction loop (re-retrieve / regenerate / abstain)
+- [x] `SUPPORTS` upgrade (and contradiction) proposals shaped as KGCS triggers
+- [x] Faithfulness, citation precision + minimality metrics
 
 ## Wave 4 — retrieval routing and evaluation
 

@@ -21,6 +21,7 @@ from kgps.grounding import GroundedAnswer, build_provenance_graph, score_answer
 from kgps.models import EvidenceChain, ProvenanceGap
 from kgps.service import ProvenanceService
 from kgps.telemetry import span
+from kgps.verify import LexicalVerifier, Verifier, verify_answer
 
 JSON = dict[str, Any]
 
@@ -54,8 +55,10 @@ def parse_answer(answer: JSON | GroundedAnswer) -> GroundedAnswer:
 class ProvenanceAPI:
     """JSON payloads for every KGPS query. Read-only (ADR-0001)."""
 
-    def __init__(self, service: ProvenanceService) -> None:
+    def __init__(self, service: ProvenanceService, verifier: Verifier | None = None) -> None:
         self.service = service
+        # The server-side judge; hosts with a model pass an LLMJudgeVerifier.
+        self.verifier: Verifier = verifier if verifier is not None else LexicalVerifier()
 
     def explain(self, assertion_id: str) -> JSON:
         exp = self.service.explain(assertion_id)
@@ -119,4 +122,21 @@ class ProvenanceAPI:
             chain_completeness=score.chain_completeness,
             span_anchoring=score.span_anchoring,
         )
+        return body
+
+    def verify_answer(self, answer: JSON | GroundedAnswer) -> JSON:
+        """Wave 3: does each sentence's cited evidence entail it? (ADR-0007)"""
+        parsed = parse_answer(answer)
+        result = verify_answer(parsed, self.service, self.verifier)
+        body = result.model_dump(mode="json")
+        sc = result.score
+        body["score"].update(
+            faithfulness=sc.faithfulness, citation_precision=sc.citation_precision
+        )
+        body["unsupported"] = list(result.unsupported)
+        for sent, dumped in zip(result.sentences, body["sentences"], strict=True):
+            dumped["supported"] = sent.supported
+            dumped["contradicted"] = sent.contradicted
+            for check, d in zip(sent.checks, dumped["checks"], strict=True):
+                d["supports"], d["leaky"] = check.supports, check.leaky
         return body

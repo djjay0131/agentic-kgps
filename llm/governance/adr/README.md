@@ -14,3 +14,4 @@ KGPS-local decisions. System-level decisions for the KG stack live in
 | [0004](0004-adopt-native-lookups-and-candidate-join.md) | Use native kg_contracts lookups and the ADR-0028 candidate join | Accepted |
 | [0005](0005-one-json-api-behind-mcp-and-http.md) | One JSON API behind the MCP and HTTP surfaces; optional extras | Accepted |
 | [0006](0006-curation-audit-join.md) | Join KGCS curation decisions into explanations through a duck-typed port | Accepted |
+| [0007](0007-pluggable-verifier-and-correction.md) | Pluggable verifier, drop-the-evidence control, and a callback correction loop | Accepted |

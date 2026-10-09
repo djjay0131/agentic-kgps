@@ -1,6 +1,6 @@
 """MCP tools for agents (wave 2b; ``pip install agentic-kgps[mcp]``).
 
-Seven read-only tools over ``ProvenanceAPI``:
+Eight read-only tools over ``ProvenanceAPI``:
 
 =====================  ==================================================
 ``kg_explain``         why is this assertion in the graph? summary + chain
@@ -10,6 +10,7 @@ Seven read-only tools over ``ProvenanceAPI``:
 ``kg_impacted_by``     assertions to re-validate if this evidence changes
 ``kg_provenance_graph``  answer sentence → assertion → evidence span graph
 ``kg_score_answer``    citation coverage / chain completeness / anchoring
+``kg_verify_answer``   entailment verdicts, faithfulness, precision, minimality
 =====================  ==================================================
 
 Works with both MCP SDK lines (decision D-013): ``mcp>=2`` exposes
@@ -38,6 +39,7 @@ TOOL_NAMES = (
     "kg_impacted_by",
     "kg_provenance_graph",
     "kg_score_answer",
+    "kg_verify_answer",
 )
 
 INSTRUCTIONS = (
@@ -119,6 +121,13 @@ def build_server(service: ProvenanceService | ProvenanceAPI) -> Any:
         """Score a GroundedAnswer: citation coverage, chain completeness and span
         anchoring of its citations against the graph."""
         return api.score_answer(answer)
+
+    @tool()
+    def kg_verify_answer(answer: dict[str, Any]) -> JSON:
+        """Verify a GroundedAnswer: does each sentence's cited evidence entail it?
+        Returns per-citation verdicts (with a drop-the-evidence control) plus
+        faithfulness, citation precision and minimality. Cite only supported sentences."""
+        return api.verify_answer(answer)
 
     return server
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 — 2026-10-09
+
+Wave 3: verifier and correction (ADR-0007).
+
+### Added
+- `kgps.verify`: `Verifier` protocol; deterministic `LexicalVerifier` baseline
+  (content-word recall, number and negation agreement); `LLMJudgeVerifier` over any
+  `complete(prompt) -> str` callable, failing closed to `UNVERIFIABLE`.
+- `verify_answer` with the drop-the-evidence control (`CitationCheck.leaky`);
+  `VerificationScore`: faithfulness, citation precision, minimality.
+- `propose_supports`: DERIVED_FROM → SUPPORTS upgrade and contradiction proposals as
+  data, with `trigger_kwargs()` for KGCS `CurationTrigger.of` (KGPS never applies them).
+- `kgps.correct.correct_answer`: re-cite / regenerate / abstain loop.
+- `ProvenanceAPI.verify_answer`, MCP `kg_verify_answer`, HTTP `POST /answers/verify`.
+
 ## 0.3.0 — 2026-10-09
 
 Wave 2b: exposure (ADR-0005).
