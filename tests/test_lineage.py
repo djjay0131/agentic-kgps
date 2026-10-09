@@ -92,7 +92,7 @@ def test_impacted_by_returns_direct_and_transitive(registry, chunk_evidence):
 
     r0 = svc.impacted_by(evs[0].evidence_id)
     assert r0.direct == (b1.assertion_id,)
-    assert r0.transitive == (total.assertion_id, studs.assertion_id)
+    assert r0.transitive == tuple(sorted((total.assertion_id, studs.assertion_id)))
 
     r2 = svc.impacted_by(evs[2].evidence_id)  # consumed only through a Derivation input
     assert r2.direct == (studs.assertion_id,) and r2.transitive == ()
