@@ -17,7 +17,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from kgps.grounding import GroundedAnswer, build_provenance_graph, score_answer
+from kgps.export import chain_to_prov, graph_to_prov
+from kgps.grounding import GroundedAnswer, build_provenance_graph, score_answer, sentence_node
 from kgps.models import EvidenceChain, ProvenanceGap
 from kgps.service import ProvenanceService
 from kgps.telemetry import span
@@ -140,3 +141,17 @@ class ProvenanceAPI:
             for check, d in zip(sent.checks, dumped["checks"], strict=True):
                 d["supports"], d["leaky"] = check.supports, check.leaky
         return body
+
+    def prov(self, assertion_id: str) -> JSON:
+        """PROV-O JSON-LD for one assertion's chain (wave 4; no evidence text)."""
+        return chain_to_prov(self.service.evidence_chain(assertion_id))
+
+    def answer_prov(self, answer: JSON | GroundedAnswer) -> JSON:
+        """PROV-O JSON-LD for an answer: output spans → assertions → evidence."""
+        parsed = parse_answer(answer)
+        graph = build_provenance_graph(parsed, self.service)
+        texts = {sentence_node(i, s): s.text for i, s in enumerate(parsed.sentences)}
+        # Text stays out by default, as for evidence (export.py); spans identify sentences.
+        return graph_to_prov(
+            graph, produced_by=parsed.produced_by, sentences=texts, include_quotes=False
+        )

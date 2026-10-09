@@ -15,3 +15,4 @@ KGPS-local decisions. System-level decisions for the KG stack live in
 | [0005](0005-one-json-api-behind-mcp-and-http.md) | One JSON API behind the MCP and HTTP surfaces; optional extras | Accepted |
 | [0006](0006-curation-audit-join.md) | Join KGCS curation decisions into explanations through a duck-typed port | Accepted |
 | [0007](0007-pluggable-verifier-and-correction.md) | Pluggable verifier, drop-the-evidence control, and a callback correction loop | Accepted |
+| [0008](0008-routing-harness-and-prov-export.md) | Provenance-gated retrieval routing, a computed B0/B1/B2 harness, and PROV-O export | Accepted |

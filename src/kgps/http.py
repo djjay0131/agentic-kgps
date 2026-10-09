@@ -8,10 +8,12 @@ GET     /assertions/{assertion_id}/explain      ``ProvenanceAPI.explain``
 GET     /assertions/{assertion_id}/chain        ``evidence_chain``
 GET     /assertions/{assertion_id}/lineage      ``lineage``
 GET     /assertions/{assertion_id}/successors   ``successors``
+GET     /assertions/{assertion_id}/prov         PROV-O JSON-LD (wave 4)
 GET     /evidence/{evidence_id}/impact          ``impacted_by``
 POST    /answers/provenance                     ``provenance_graph``
 POST    /answers/score                          ``score_answer``
 POST    /answers/verify                         ``verify_answer`` (wave 3)
+POST    /answers/prov                           PROV-O JSON-LD for an answer
 GET     /health                                 liveness + version
 ======  ======================================  ===========================
 
@@ -50,6 +52,10 @@ def create_router(service: ProvenanceService | ProvenanceAPI) -> APIRouter:
     def successors(assertion_id: str) -> JSON:
         return api.successors(assertion_id)
 
+    @router.get("/assertions/{assertion_id:path}/prov")
+    def prov(assertion_id: str) -> JSON:
+        return api.prov(assertion_id)
+
     @router.get("/evidence/{evidence_id:path}/impact")
     def impact(evidence_id: str) -> JSON:
         return api.impacted_by(evidence_id)
@@ -72,6 +78,13 @@ def create_router(service: ProvenanceService | ProvenanceAPI) -> APIRouter:
     def verify(answer: dict[str, Any] = Body(...)) -> JSON:  # noqa: B008
         try:
             return api.verify_answer(answer)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/answers/prov")
+    def answer_prov(answer: dict[str, Any] = Body(...)) -> JSON:  # noqa: B008
+        try:
+            return api.answer_prov(answer)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 

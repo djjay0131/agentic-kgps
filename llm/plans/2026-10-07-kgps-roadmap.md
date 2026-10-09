@@ -34,9 +34,9 @@ Design authority: `llm/specs/2026-10-07-kgps-design.md` §9.
 
 ## Wave 4 — retrieval routing and evaluation
 
-- [ ] Retrieval-routing contract (dense / sparse / graph) + supervisor
-- [ ] B0/B1/B2 harness on the agentic-kg ground-truth chain
-- [ ] PROV-O / nanopub export
+- [x] Retrieval-routing contract (dense / sparse / graph) + rule router + provenance gate (ADR-0008)
+- [x] B0/B1/B2 harness (computed metrics, perturbation); running it on the agentic-kg ground-truth chain → wave 5 (D-031)
+- [x] PROV-O JSON-LD export (nanopub packaging → wave 5)
 
 ## Wave 5 — case studies
 

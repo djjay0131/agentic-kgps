@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 — 2026-10-09
+
+Wave 4: retrieval routing, evaluation harness, PROV-O export (ADR-0008).
+
+### Added
+- `kgps.routing`: `Retriever` contract; `SparseRetriever` (BM25), `DenseRetriever`
+  (any embedder; model-free `HashingEmbedder` default), `GraphRetriever` (one-hop
+  derivation / supersession / shared-identity expansion); rule-based `route()`;
+  reciprocal-rank `fuse()`; `ProvenanceRouter` with a provenance gate (grounded only,
+  supersession followed).
+- `kgps.harness`: B0 (dense RAG) / B1 (hybrid) / B2 (PA-AKG) pipelines over the same
+  cases, `ExtractiveGenerator` floor, `hide_gold_evidence` perturbation, computed
+  metrics (recall@k, gold-citation precision, chain completeness, faithfulness,
+  abstention, ungrounded-citation rate) and a Markdown `table()`.
+- `kgps.export`: W3C PROV-O JSON-LD for chains and answers (no evidence text unless
+  asked); `ProvenanceAPI.prov` / `answer_prov`, MCP `kg_export_prov`, HTTP
+  `GET /assertions/{id}/prov`, `POST /answers/prov`.
+
 ## 0.4.0 — 2026-10-09
 
 Wave 3: verifier and correction (ADR-0007).

@@ -1,6 +1,6 @@
 """MCP tools for agents (wave 2b; ``pip install agentic-kgps[mcp]``).
 
-Eight read-only tools over ``ProvenanceAPI``:
+Nine read-only tools over ``ProvenanceAPI``:
 
 =====================  ==================================================
 ``kg_explain``         why is this assertion in the graph? summary + chain
@@ -11,6 +11,7 @@ Eight read-only tools over ``ProvenanceAPI``:
 ``kg_provenance_graph``  answer sentence → assertion → evidence span graph
 ``kg_score_answer``    citation coverage / chain completeness / anchoring
 ``kg_verify_answer``   entailment verdicts, faithfulness, precision, minimality
+``kg_export_prov``     PROV-O JSON-LD for an assertion's provenance
 =====================  ==================================================
 
 Works with both MCP SDK lines (decision D-013): ``mcp>=2`` exposes
@@ -40,6 +41,7 @@ TOOL_NAMES = (
     "kg_provenance_graph",
     "kg_score_answer",
     "kg_verify_answer",
+    "kg_export_prov",
 )
 
 INSTRUCTIONS = (
@@ -128,6 +130,12 @@ def build_server(service: ProvenanceService | ProvenanceAPI) -> Any:
         Returns per-citation verdicts (with a drop-the-evidence control) plus
         faithfulness, citation precision and minimality. Cite only supported sentences."""
         return api.verify_answer(answer)
+
+    @tool()
+    def kg_export_prov(assertion_id: str) -> JSON:
+        """W3C PROV-O (JSON-LD) for an assertion's provenance: evidence, agents,
+        derivation lineage, supersession and curation decisions. No evidence text."""
+        return api.prov(assertion_id)
 
     return server
 

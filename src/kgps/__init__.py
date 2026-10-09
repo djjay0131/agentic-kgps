@@ -8,6 +8,7 @@ generated output that cites them. Read-only by construction (ADR-0001).
 
 from kgps.api import ProvenanceAPI
 from kgps.correct import CorrectionAction, CorrectionResult, correct_answer
+from kgps.export import chain_to_prov, graph_to_prov
 from kgps.grounding import (
     AgentRole,
     AnswerScore,
@@ -20,6 +21,7 @@ from kgps.grounding import (
     build_provenance_graph,
     score_answer,
 )
+from kgps.harness import Baseline, EvalCase, HarnessReport, Perturbation, run_harness
 from kgps.models import (
     CurationDecision,
     EvidenceChain,
@@ -43,6 +45,15 @@ from kgps.ports import (
     StaticAssertionCatalog,
     catalog_for,
 )
+from kgps.routing import (
+    DenseRetriever,
+    GraphRetriever,
+    ProvenanceRouter,
+    RetrievalMode,
+    Retriever,
+    SparseRetriever,
+    route,
+)
 from kgps.service import ProvenanceService
 from kgps.spans import parse_span, span_for
 from kgps.verify import (
@@ -58,9 +69,23 @@ from kgps.verify import (
     verify_answer,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
+    "Baseline",
+    "DenseRetriever",
+    "EvalCase",
+    "GraphRetriever",
+    "HarnessReport",
+    "Perturbation",
+    "ProvenanceRouter",
+    "RetrievalMode",
+    "Retriever",
+    "SparseRetriever",
+    "chain_to_prov",
+    "graph_to_prov",
+    "route",
+    "run_harness",
     "AnswerVerification",
     "CorrectionAction",
     "CorrectionResult",
