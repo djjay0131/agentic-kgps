@@ -11,6 +11,7 @@ GET     /assertions/{assertion_id}/successors   ``successors``
 GET     /evidence/{evidence_id}/impact          ``impacted_by``
 POST    /answers/provenance                     ``provenance_graph``
 POST    /answers/score                          ``score_answer``
+POST    /answers/verify                         ``verify_answer`` (wave 3)
 GET     /health                                 liveness + version
 ======  ======================================  ===========================
 
@@ -64,6 +65,13 @@ def create_router(service: ProvenanceService | ProvenanceAPI) -> APIRouter:
     def score(answer: dict[str, Any] = Body(...)) -> JSON:  # noqa: B008
         try:
             return api.score_answer(answer)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/answers/verify")
+    def verify(answer: dict[str, Any] = Body(...)) -> JSON:  # noqa: B008
+        try:
+            return api.verify_answer(answer)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
