@@ -24,6 +24,7 @@ span's verified ``quote``. Hash-only evidence is UNVERIFIABLE, never guessed.
 """
 
 import json
+import math
 import re
 from collections.abc import Callable, Iterable, Sequence
 from enum import StrEnum
@@ -91,18 +92,33 @@ _STOPWORDS = frozenset(
 )
 
 
+# "one" is left out: it is a pronoun at least as often as a number.
 _NUMBER_WORDS = {
     w: str(i)
     for i, w in enumerate(
-        "zero one two three four five six seven eight nine ten eleven twelve thirteen "
+        "zero _ two three four five six seven eight nine ten eleven twelve thirteen "
         "fourteen fifteen sixteen seventeen eighteen nineteen twenty".split()
     )
+    if w != "_"
 }
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}\b)")
+_SENTENCE = re.compile(r"(?<=[.!?;])\s+|\n+")
+
+# Direction/polarity pairs the bag-of-words recall cannot see.
+_OPPOSITES: tuple[tuple[str, str], ...] = (
+    ("rise", "fall"), ("rose", "fell"), ("increase", "decrease"), ("grow", "shrink"),
+    ("higher", "lower"), ("more", "less"), ("before", "after"), ("improve", "worsen"),
+    ("gain", "loss"), ("above", "below"), ("larger", "smaller"), ("faster", "slower"),
+    ("accept", "reject"), ("success", "failure"), ("true", "false"), ("cause", "prevent"),
+)
+_OPPOSITE: dict[str, str] = {}
+for _x, _y in _OPPOSITES:
+    _OPPOSITE[_x], _OPPOSITE[_y] = _y, _x
 
 
 def _tokens(text: str) -> list[str]:
-    """Lower-cased words and numbers; number words up to twenty become digits."""
-    words = _WORD.findall(text.lower().replace("n't", " not"))
+    """Lower-cased words and numbers; number words two..twenty become digits."""
+    words = _WORD.findall(_THOUSANDS.sub("", text.lower()).replace("n't", " not"))
     return [_NUMBER_WORDS.get(w, w) for w in words]
 
 
@@ -117,19 +133,60 @@ def _stem(word: str) -> str:
     return word
 
 
+def _negated_prefix_clash(claim: set[str], evidence: set[str]) -> str | None:
+    """``effective`` vs ``ineffective`` / ``able`` vs ``unable`` style clashes."""
+    for word in claim:
+        for prefix in ("in", "un", "non", "im", "dis"):
+            if prefix + word in evidence:
+                return f"{word} vs {prefix}{word}"
+            if word.startswith(prefix) and word[len(prefix):] in evidence and len(word) > len(prefix) + 3:
+                return f"{word} vs {word[len(prefix):]}"
+    return None
+
+
+def _roles_reversed(claim_seq: list[str], ev_seq: list[str]) -> bool:
+    """True when the evidence states the claim's relations backwards.
+
+    For each run of three consecutive claim content words ``x v y`` found in
+    the evidence sentence, the evidence order is either preserved (x<v<y),
+    fully reversed (x>v>y, e.g. ``teams cause defects`` vs ``defects cause
+    teams``) or mixed (clause reordering). Reversed runs outnumbering
+    preserved ones means the roles are swapped.
+    """
+    first: dict[str, int] = {}
+    for i, t in enumerate(ev_seq):
+        first.setdefault(t, i)
+    seq = list(dict.fromkeys(claim_seq))
+    preserved = reversed_ = 0
+    for x, v, y in zip(seq, seq[1:], seq[2:], strict=False):
+        if x in first and v in first and y in first:
+            px, pv, py = first[x], first[v], first[y]
+            if px < pv < py:
+                preserved += 1
+            elif px > pv > py:
+                reversed_ += 1
+    return reversed_ > preserved
+
+
 class LexicalVerifier:
     """Deterministic entailment baseline (no model).
 
-    ENTAILED when every number in the claim (digits, or number words up to
-    twenty) appears in the evidence, negation
-    polarity agrees, and at least ``threshold`` of the claim's content words
-    (stemmed) occur in the evidence. A number or polarity mismatch on an
-    otherwise-overlapping pair is CONTRADICTED. This is a floor to calibrate
-    model judges against, not a substitute for them.
+    The evidence is split into sentences and the claim is judged against the
+    best-matching one, so a negation or number elsewhere in a paragraph does
+    not leak in. ENTAILED needs: content-word recall (stemmed) >= ``threshold``,
+    every claim number present (digits, thousands separators removed, number
+    words two..twenty), matching negation polarity, no direction clash
+    (``rose``/``fell``, ``before``/``after``, ``effective``/``ineffective``…),
+    and no reversed roles (so ``A causes B`` is not entailed by ``B causes A``). Number, negation or direction clashes on an
+    overlapping sentence are CONTRADICTED.
+
+    Known limits (ADR-0007): paraphrase lowers recall; it never fires the
+    drop-the-evidence control (empty evidence is NOT_ENTAILED by construction).
+    It is a calibration floor and a CI-safe default, not a production judge.
     """
 
     name = "lexical"
-    version = "1"
+    version = "2"
 
     def __init__(self, threshold: float = 0.6) -> None:
         if not 0.0 < threshold <= 1.0:
@@ -137,47 +194,82 @@ class LexicalVerifier:
         self.threshold = threshold
 
     def check(self, claim: str, evidence_text: str) -> Judgement:
-        claim_tokens, ev_tokens = _tokens(claim), _tokens(evidence_text)
-        if not ev_tokens:
-            return Judgement(verdict=Verdict.NOT_ENTAILED, score=0.0, rationale="no evidence text")
-        content = {_stem(t) for t in claim_tokens if t not in _STOPWORDS and t not in _NEGATIONS}
+        claim_tokens = _tokens(claim)
+        content_seq = [
+            _stem(t) for t in claim_tokens if t not in _STOPWORDS and t not in _NEGATIONS
+        ]
+        content = set(content_seq)
         if not content:
             return Judgement(
                 verdict=Verdict.UNVERIFIABLE, score=0.0, rationale="claim has no content words"
             )
-        ev_stems = {_stem(t) for t in ev_tokens}
-        recall = len(content & ev_stems) / len(content)
+        best: tuple[float, list[str]] | None = None
+        for sentence in _SENTENCE.split(evidence_text):
+            toks = _tokens(sentence)
+            if not toks:
+                continue
+            stems = {_stem(t) for t in toks}
+            recall = len(content & stems) / len(content)
+            if best is None or recall > best[0]:
+                best = (recall, toks)
+        if best is None:
+            return Judgement(verdict=Verdict.NOT_ENTAILED, score=0.0, rationale="no evidence text")
+        recall, ev_tokens = best
+        ev_stems_seq = [_stem(t) for t in ev_tokens]
+        ev_stems = set(ev_stems_seq)
+        score = round(recall, 4)
+        overlapping = recall >= self.threshold * 0.5
+
         claim_numbers, ev_numbers = _numbers(claim_tokens), _numbers(ev_tokens)
         missing_numbers = claim_numbers - ev_numbers
-        claim_neg = bool(_NEGATIONS.intersection(claim_tokens))
-        ev_neg = bool(_NEGATIONS.intersection(ev_tokens))
-        overlapping = recall >= self.threshold * 0.5
         if overlapping and missing_numbers and ev_numbers:
             return Judgement(
-                verdict=Verdict.CONTRADICTED,
-                score=round(recall, 4),
+                verdict=Verdict.CONTRADICTED, score=score,
                 rationale=f"numbers {sorted(missing_numbers)} not in evidence",
             )
-        if recall >= self.threshold and claim_neg != ev_neg:
-            return Judgement(
-                verdict=Verdict.CONTRADICTED, score=round(recall, 4), rationale="negation mismatch"
-            )
-        if recall >= self.threshold and not missing_numbers:
-            return Judgement(
-                verdict=Verdict.ENTAILED, score=round(recall, 4),
-                rationale=f"content-word recall {recall:.2f}",
-            )
+        if recall >= self.threshold:
+            if bool(_NEGATIONS.intersection(claim_tokens)) != bool(
+                _NEGATIONS.intersection(ev_tokens)
+            ):
+                return Judgement(
+                    verdict=Verdict.CONTRADICTED, score=score, rationale="negation mismatch"
+                )
+            claim_words = set(claim_tokens)
+            ev_words = set(ev_tokens)
+            for w in claim_words:
+                opp = _OPPOSITE.get(w) or _OPPOSITE.get(_stem(w))
+                if opp and (opp in ev_words or opp in ev_stems) and w not in ev_words:
+                    return Judgement(
+                        verdict=Verdict.CONTRADICTED, score=score,
+                        rationale=f"direction clash: {w} vs {opp}",
+                    )
+            clash = _negated_prefix_clash(claim_words - ev_words, ev_words - claim_words)
+            if clash:
+                return Judgement(
+                    verdict=Verdict.CONTRADICTED, score=score, rationale=f"polarity clash: {clash}"
+                )
+            if _roles_reversed(content_seq, ev_stems_seq):
+                return Judgement(
+                    verdict=Verdict.NOT_ENTAILED, score=score,
+                    rationale="the evidence states the relation the other way round",
+                )
+            if not missing_numbers:
+                return Judgement(
+                    verdict=Verdict.ENTAILED, score=score,
+                    rationale=f"content-word recall {recall:.2f}",
+                )
         why = f"content-word recall {recall:.2f}"
         if missing_numbers:
             why += f"; numbers {sorted(missing_numbers)} not in evidence"
-        return Judgement(verdict=Verdict.NOT_ENTAILED, score=round(recall, 4), rationale=why)
+        return Judgement(verdict=Verdict.NOT_ENTAILED, score=score, rationale=why)
 
 
 # -- pluggable model judge -----------------------------------------------------------
 
-JUDGE_PROMPT_VERSION = "kgps-judge/1"
+JUDGE_PROMPT_VERSION = "kgps-judge/2"
 JUDGE_PROMPT = """You are verifying a claim against evidence. Use ONLY the evidence.
-Answer with one JSON object: {{"verdict": "ENTAILED" | "NOT_ENTAILED" | "CONTRADICTED", "score": <0..1>, "rationale": "<one sentence>"}}.
+Reply with exactly one JSON object and nothing else:
+{{"verdict": "ENTAILED" | "NOT_ENTAILED" | "CONTRADICTED", "score": <0..1>, "rationale": "<one sentence>"}}
 
 Evidence:
 <<<
@@ -190,14 +282,34 @@ Claim:
 >>>
 """
 
-_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+_FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+
+def _parse_judge_output(raw: object) -> dict[str, object] | None:
+    """The reply must be exactly one JSON object (optionally in a ``` fence).
+
+    Anything else — prose around it, two objects, an echoed object inside an
+    explanation — is rejected, so text quoted from the evidence cannot be
+    mistaken for the verdict.
+    """
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    fenced = _FENCE.match(text)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 class LLMJudgeVerifier:
     """A model judge behind any ``complete(prompt) -> str`` callable.
 
-    Output that is not a JSON object with a known verdict becomes
-    UNVERIFIABLE (never a silent ENTAILED); a raising ``complete`` too.
+    Output that is not exactly one JSON object with a known verdict becomes
+    UNVERIFIABLE (never a silent ENTAILED); so does a raising ``complete``.
     """
 
     def __init__(
@@ -218,25 +330,40 @@ class LLMJudgeVerifier:
         try:
             raw = self._complete(prompt)
         except Exception as exc:  # noqa: BLE001 — a failing judge is a verdict, not a crash
-            return Judgement(
-                verdict=Verdict.UNVERIFIABLE, score=0.0,
-                rationale=f"judge failed: {type(exc).__name__}",
-            )
-        match = _JSON_OBJECT.search(raw or "")
+            return _unverifiable(f"judge failed: {type(exc).__name__}")
+        data = _parse_judge_output(raw)
         try:
-            data = json.loads(match.group(0)) if match else None
-            verdict = Verdict(str(data["verdict"]).upper()) if isinstance(data, dict) else None
-        except (ValueError, KeyError, TypeError):
+            verdict = Verdict(str(data["verdict"]).upper()) if data is not None else None
+        except (ValueError, KeyError):
             verdict = None
-        if verdict is None or verdict is Verdict.UNVERIFIABLE or not isinstance(data, dict):
-            return Judgement(
-                verdict=Verdict.UNVERIFIABLE, score=0.0, rationale="unparseable judge output"
-            )
+        if data is None or verdict is None or verdict is Verdict.UNVERIFIABLE:
+            return _unverifiable("unparseable judge output")
+        default = 1.0 if verdict is Verdict.ENTAILED else 0.0
         try:
-            score = min(1.0, max(0.0, float(data.get("score", 1.0 if verdict is Verdict.ENTAILED else 0.0))))
+            score = float(data.get("score", default))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             score = 0.0
-        return Judgement(verdict=verdict, score=score, rationale=str(data.get("rationale", ""))[:500])
+        if not math.isfinite(score):
+            score = 0.0
+        return Judgement(
+            verdict=verdict, score=min(1.0, max(0.0, score)),
+            rationale=str(data.get("rationale", ""))[:500],
+        )
+
+
+def _unverifiable(why: str) -> Judgement:
+    return Judgement(verdict=Verdict.UNVERIFIABLE, score=0.0, rationale=why)
+
+
+def safe_check(verifier: Verifier, claim: str, evidence: str) -> Judgement:
+    """``verifier.check`` that never raises (ADR-0003): failures are UNVERIFIABLE."""
+    try:
+        result = verifier.check(claim, evidence)
+    except Exception as exc:  # noqa: BLE001
+        return _unverifiable(f"verifier {getattr(verifier, 'name', '?')} failed: {type(exc).__name__}")
+    if not isinstance(result, Judgement):
+        return _unverifiable("verifier returned no Judgement")
+    return result
 
 
 # -- answer verification -------------------------------------------------------------
@@ -248,6 +375,7 @@ class CitationCheck(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     sentence_index: int
+    citation_index: int
     assertion_id: str
     evidence_id: str | None
     judgement: Judgement
@@ -275,15 +403,25 @@ class SentenceVerification(BaseModel):
         return bool(self.checks)
 
     @property
-    def supported(self) -> bool:
-        return any(c.supports for c in self.checks)
-
-    @property
     def contradicted(self) -> bool:
         return any(c.judgement.verdict is Verdict.CONTRADICTED for c in self.checks)
 
     @property
+    def supported(self) -> bool:
+        """Some cited evidence entails it and none of the cited evidence
+        contradicts it: a contradiction vetoes support (ADR-0007 §5)."""
+        return any(c.supports for c in self.checks) and not self.contradicted
+
+    @property
+    def supporting_citation_indexes(self) -> tuple[int, ...]:
+        if not self.supported:
+            return ()
+        return tuple(sorted({c.citation_index for c in self.checks if c.supports}))
+
+    @property
     def supporting_citations(self) -> tuple[str, ...]:
+        if not self.supported:
+            return ()
         return tuple(dict.fromkeys(c.assertion_id for c in self.checks if c.supports))
 
 
@@ -323,7 +461,12 @@ class AnswerVerification(BaseModel):
 
     @property
     def unsupported(self) -> tuple[int, ...]:
-        return tuple(s.index for s in self.sentences if not s.supported)
+        """Cited sentences whose cited evidence does not support them."""
+        return tuple(s.index for s in self.sentences if s.cited and not s.supported)
+
+    @property
+    def uncited(self) -> tuple[int, ...]:
+        return tuple(s.index for s in self.sentences if not s.cited)
 
 
 def cited_links(
@@ -359,7 +502,7 @@ def verify_answer(
         sentences: list[SentenceVerification] = []
         for i, sentence in enumerate(answer.sentences):
             checks: list[CitationCheck] = []
-            for citation in sentence.citations:
+            for ci, citation in enumerate(sentence.citations):
                 links = cited_links(svc, citation.assertion_id, citation.evidence_ids)
                 judged = False
                 for link in links:
@@ -367,24 +510,24 @@ def verify_answer(
                     if text is None:
                         continue
                     judged = True
-                    j = verifier.check(sentence.text, text)
-                    ctrl = verifier.check(sentence.text, "") if (
+                    j = safe_check(verifier, sentence.text, text)
+                    ctrl = safe_check(verifier, sentence.text, "") if (
                         control and j.verdict is Verdict.ENTAILED
                     ) else None
                     checks.append(
                         CitationCheck(
-                            sentence_index=i, assertion_id=citation.assertion_id,
+                            sentence_index=i, citation_index=ci,
+                            assertion_id=citation.assertion_id,
                             evidence_id=link.evidence_id, judgement=j, control=ctrl,
                         )
                     )
                 if not judged:
                     checks.append(
                         CitationCheck(
-                            sentence_index=i, assertion_id=citation.assertion_id,
-                            evidence_id=None,
-                            judgement=Judgement(
-                                verdict=Verdict.UNVERIFIABLE, score=0.0,
-                                rationale="assertion not grounded or no evidence text visible",
+                            sentence_index=i, citation_index=ci,
+                            assertion_id=citation.assertion_id, evidence_id=None,
+                            judgement=_unverifiable(
+                                "assertion not grounded or no evidence text visible"
                             ),
                         )
                     )
@@ -400,23 +543,21 @@ def verify_answer(
 
 
 def _score(answer: GroundedAnswer, sentences: Sequence[SentenceVerification]) -> VerificationScore:
-    citations = sum(len(s.citations) for s in answer.sentences)
-    supporting = 0
     minimal: list[float] = []
     for s, orig in zip(sentences, answer.sentences, strict=True):
         cited_ids = tuple(dict.fromkeys(c.assertion_id for c in orig.citations))
-        sup = s.supporting_citations
-        supporting += sum(1 for c in orig.citations if c.assertion_id in sup)
         if s.supported and cited_ids:
-            # One supporting citation suffices; every extra citation is redundancy.
+            # One supporting citation suffices; every extra cited assertion is redundancy.
             minimal.append(1.0 / len(cited_ids))
     return VerificationScore(
         sentences=len(sentences),
         cited_sentences=sum(1 for s in sentences if s.cited),
         supported_sentences=sum(1 for s in sentences if s.supported),
         contradicted_sentences=sum(1 for s in sentences if s.contradicted),
-        citations=citations,
-        supporting_citations=supporting,
+        citations=sum(len(s.citations) for s in answer.sentences),
+        # Per citation (not per assertion): a citation narrowed to evidence that
+        # does not entail the sentence earns nothing from a sibling citation.
+        supporting_citations=sum(len(s.supporting_citation_indexes) for s in sentences),
         leaky_checks=sum(1 for s in sentences for c in s.checks if c.leaky),
         minimality=sum(minimal) / len(minimal) if minimal else 0.0,
     )
@@ -433,10 +574,11 @@ class ProposalKind(StrEnum):
 class SupportsProposal(BaseModel):
     """A verifier finding about an (assertion, evidence) edge, for KGCS to decide.
 
-    ``trigger_kwargs()`` returns the keyword arguments of
-    ``kgcs.recuration.triggers.CurationTrigger.of`` (``NEW_EVIDENCE`` for an
-    upgrade, ``CONTRADICTION_DETECTED`` for a contradiction), so the caller —
-    not KGPS — can raise the trigger (ADR-0001).
+    ``trigger_kwargs()`` returns JSON-able keyword arguments for
+    ``kgcs.recuration.triggers.CurationTrigger.of`` with ``kind`` as a string
+    (``NEW_EVIDENCE`` for an upgrade, ``CONTRADICTION_DETECTED`` for a
+    contradiction); ``to_kgcs_trigger()`` builds the real trigger when ``kgcs``
+    is importable. Either way the caller — not KGPS — raises it (ADR-0001).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -470,6 +612,15 @@ class SupportsProposal(BaseModel):
             "trace_id": self.trace_id,
         }
 
+    def to_kgcs_trigger(self) -> object:
+        """A ``kgcs`` ``CurationTrigger`` (needs agentic-kgcs importable)."""
+        import importlib
+
+        triggers = importlib.import_module("kgcs.recuration.triggers")
+        kwargs = self.trigger_kwargs()
+        kwargs["kind"] = triggers.TriggerKind(kwargs["kind"])
+        return triggers.CurationTrigger.of(**kwargs)
+
 
 def render_assertion(assertion: Assertion) -> str:
     """Default statement text: ``<subject> <predicate words> <object>``.
@@ -491,7 +642,12 @@ def propose_supports(
     min_score: float = 0.0,
 ) -> tuple[SupportsProposal, ...]:
     """Proposals for KGCS: DERIVED_FROM → SUPPORTS where the evidence entails the
-    assertion's statement; CONTRADICTS where it contradicts it. Read-only."""
+    assertion's statement; CONTRADICTS where it contradicts it. Read-only.
+
+    ``min_score`` filters upgrades only (an ENTAILED score is a confidence; a
+    CONTRADICTED score from the lexical baseline is word overlap). Proposals
+    from the lexical baseline are leads for KGCS review, never auto-applied.
+    """
     proposals: list[SupportsProposal] = []
     with span("propose_supports", {"kgps.verifier": verifier.name}):
         for aid in assertion_ids:
@@ -506,11 +662,11 @@ def propose_supports(
                 text = evidence_text(link.evidence)
                 if text is None:
                     continue
-                j = verifier.check(statement, text)
-                if j.score < min_score:
-                    continue
+                j = safe_check(verifier, statement, text)
                 if j.verdict is Verdict.ENTAILED:
-                    if verifier.check(statement, "").verdict is Verdict.ENTAILED:
+                    if j.score < min_score:
+                        continue
+                    if safe_check(verifier, statement, "").verdict is Verdict.ENTAILED:
                         continue  # drop-the-evidence control: prior knowledge, not evidence
                     kind, proposed = ProposalKind.SUPPORTS_UPGRADE, EvidenceRelationship.SUPPORTS
                 elif j.verdict is Verdict.CONTRADICTED:

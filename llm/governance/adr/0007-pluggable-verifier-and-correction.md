@@ -17,29 +17,46 @@ state (ADR-0001) or depending on any model provider.
 1. **`Verifier` protocol** — `check(claim, evidence_text) -> Judgement`
    (`ENTAILED` / `NOT_ENTAILED` / `CONTRADICTED` / `UNVERIFIABLE`, score,
    rationale), with `name` and `version` recorded on every result.
-2. **Two implementations ship.** `LexicalVerifier` is a deterministic baseline
-   (content-word recall with light stemming, number agreement incl. number
-   words up to twenty, negation polarity); it runs in CI and is the server
-   default. `LLMJudgeVerifier` wraps any `complete(prompt) -> str`; unparseable
-   or failing output is `UNVERIFIABLE`, never `ENTAILED`.
+2. **Two implementations ship.** `LexicalVerifier` (v2) is a deterministic
+   baseline judged against the best-matching evidence *sentence*: content-word
+   recall with light stemming, number agreement (thousands separators removed,
+   number words two..twenty), negation polarity, direction clashes
+   (`rose`/`fell`, `before`/`after`, `in-`/`un-` prefixes) and reversed roles
+   (`A causes B` vs `B causes A`). It runs in CI and is the server default.
+   `LLMJudgeVerifier` wraps any `complete(prompt) -> str` and accepts **only** a
+   reply that is exactly one JSON object (optionally fenced); prose, several
+   objects, non-strings, non-finite scores or a raising callable are
+   `UNVERIFIABLE`, never `ENTAILED`, so evidence text echoed by the model cannot
+   become the verdict. Every call goes through `safe_check`: a raising verifier
+   is an `UNVERIFIABLE` check, not a crash (ADR-0003).
 3. **Only visible text is judged** — `Evidence.content`, else the typed span's
    verified `quote`. Hash-only, absent and redacted evidence is `UNVERIFIABLE`.
 4. **Drop-the-evidence control** — every `ENTAILED` judgement is repeated
    against empty evidence; if it survives, the check is `leaky` and does not
-   count as support.
-5. **Metrics** — faithfulness (supported / cited sentences), citation precision
-   (supporting / all citations), minimality (mean of 1 / distinct citations over
-   supported sentences), plus counts of contradicted sentences and leaky checks.
+   count as support. (The lexical baseline can never be leaky — empty evidence
+   is `NOT_ENTAILED` by construction — so the control matters for model judges.)
+5. **Support and metrics.** A sentence is supported when some cited evidence
+   entails it **and none of its cited evidence contradicts it** (a contradiction
+   vetoes support). Faithfulness = supported / cited sentences; citation
+   precision = supporting / all citations, counted **per citation** (a citation
+   narrowed to non-entailing evidence earns nothing from a sibling citation of
+   the same assertion); minimality = mean of 1 / distinct cited assertions over
+   supported sentences; plus counts of contradicted sentences and leaky checks.
 6. **Proposals are data.** `propose_supports` turns verifier findings on
    `DERIVED_FROM` links into `SUPPORTS_UPGRADE` or `CONTRADICTION` proposals
    whose `trigger_kwargs()` match `kgcs` `CurationTrigger.of`
-   (`NEW_EVIDENCE` / `CONTRADICTION_DETECTED`). The caller raises the trigger;
-   KGCS decides. Upgrades also pass the control.
+   (`NEW_EVIDENCE` / `CONTRADICTION_DETECTED`, `kind` as a string);
+   `to_kgcs_trigger()` builds the real trigger when `kgcs` is importable. The
+   caller raises it; KGCS decides. Upgrades also pass the control; `min_score`
+   filters upgrades only. Lexical-baseline proposals are review leads, never
+   auto-applied.
 7. **Correction loop** — `correct_answer` repairs unsupported sentences by
    re-citing (`retrieve` callback), then regenerating (`regenerate` callback,
    kept only if the new sentence is entailed), else abstaining; after
-   `max_rounds`, anything still unsupported is removed. No sentence left ⇒ the
-   result abstains.
+   `max_rounds`, anything still unsupported is removed, re-verifying until the
+   answer is stable. No sentence left ⇒ the result abstains. `drop_uncited`
+   (default on, strict PA-AKG) treats uncited sentences as unsupported; off
+   keeps connective prose.
 
 ## Rationale
 
@@ -83,7 +100,7 @@ Violates ADR-0001 and bypasses KGCS's audit and review.
 
 ## Related Documents
 
-- Design spec §5, §6; ADR-0001, ADR-0005; decision log D-027, D-028
+- Design spec §5, §6; ADR-0001, ADR-0003, ADR-0005; decision log D-027 … D-029
 
 ## Related Issues / PRs
 

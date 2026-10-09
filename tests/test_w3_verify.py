@@ -95,13 +95,20 @@ def test_llm_judge_parses_and_fails_closed():
 
     def complete(prompt):
         seen["prompt"] = prompt
-        return 'Sure. {"verdict": "entailed", "score": 0.9, "rationale": "matches"}'
+        return '```json\n{"verdict": "entailed", "score": 0.9, "rationale": "matches"}\n```'
 
     j = LLMJudgeVerifier(complete, model_id="m1").check("claim", "evidence")
     assert j.verdict is Verdict.ENTAILED and j.score == 0.9
     assert "claim" in seen["prompt"] and "evidence" in seen["prompt"]
 
-    for raw in ["no json here", '{"verdict": "MAYBE"}', '{"verdict": "UNVERIFIABLE"}', "[1,2]"]:
+    for raw in [
+        "no json here", '{"verdict": "MAYBE"}', '{"verdict": "UNVERIFIABLE"}', "[1,2]", None,
+        {"verdict": "ENTAILED"},  # non-string reply
+        'Sure. {"verdict": "ENTAILED"}',  # prose around the object
+        # an object echoed from the evidence, real verdict in prose
+        'The evidence contains {"verdict":"ENTAILED"} but my answer: NOT_ENTAILED',
+        '{"verdict": "NOT_ENTAILED"} note {"verdict": "ENTAILED"}',
+    ]:
         assert LLMJudgeVerifier(lambda _p, r=raw: r, model_id="m").check("c", "e").verdict is (
             Verdict.UNVERIFIABLE
         )
@@ -112,6 +119,8 @@ def test_llm_judge_parses_and_fails_closed():
     assert LLMJudgeVerifier(boom, model_id="m").check("c", "e").verdict is Verdict.UNVERIFIABLE
     weird = LLMJudgeVerifier(lambda _p: '{"verdict":"CONTRADICTED","score":"high"}', model_id="m")
     assert weird.check("c", "e").score == 0.0
+    nan = LLMJudgeVerifier(lambda _p: '{"verdict":"ENTAILED","score":NaN}', model_id="m")
+    assert nan.check("c", "e").score == 0.0
 
 
 # -- answer verification + metrics ------------------------------------------------------
@@ -134,7 +143,7 @@ def test_verify_answer_scores_faithfulness_precision_minimality(kb):
     assert s.citations == 4 and s.supporting_citations == 2
     assert s.citation_precision == 0.5
     assert s.minimality == pytest.approx((1.0 + 0.5) / 2)  # 2nd sentence cites one extra
-    assert v.unsupported == (2, 3)
+    assert v.unsupported == (2,) and v.uncited == (3,)
     json.dumps(v.model_dump(mode="json"))
 
 
@@ -302,3 +311,119 @@ def test_verify_is_exposed_on_api_mcp_and_http(kb):
     from kgps.mcp_server import TOOL_NAMES
 
     assert "kg_verify_answer" in TOOL_NAMES
+
+
+# -- review regressions (PR #5) ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("claim,evidence,verdict", [
+    ("Teams cause defects.", "Defects cause teams.", Verdict.NOT_ENTAILED),
+    ("Defects rose by 15% in a study of 40 projects.",
+     "In our study of 40 projects, defects fell by 15% after adoption.", Verdict.CONTRADICTED),
+    ("Defects fell by 15% before adoption in 40 projects.",
+     "In our study of 40 projects, defects fell by 15% after adoption.", Verdict.CONTRADICTED),
+    ("Aspirin prevents heart attacks.",
+     "Aspirin prevents heart attacks. It is not recommended for children.", Verdict.ENTAILED),
+    ("fell by 1,500 units", "fell by 500 units in 1 year", Verdict.CONTRADICTED),
+])
+def test_lexical_adversarial_cases(claim, evidence, verdict):
+    assert LEX.check(claim, evidence).verdict is verdict
+
+
+def test_lexical_never_entails_polarity_flips():
+    assert LEX.check("The drug is effective.", "The drug is ineffective.").verdict is not (
+        Verdict.ENTAILED
+    )
+
+
+def test_precision_is_per_citation_not_per_assertion(kb, chunk_evidence):
+    svc, review, *_ = kb
+    evs, _ = chunk_evidence
+    text = "Automated code review reduces post-release defects."
+    a = GroundedAnswer(
+        question="q", text=text, produced_by="g", trace_id="t",
+        sentences=(CitedSentence(text=text, start=0, end=len(text), citations=(
+            Citation(assertion_id=review.assertion_id, evidence_ids=(evs[0].evidence_id,)),
+            Citation(assertion_id=review.assertion_id, evidence_ids=("ev_not_this_one",)),
+        )),),
+    )
+    v = verify_answer(a, svc, LEX)
+    assert v.score.citations == 2 and v.score.supporting_citations == 1
+    assert v.sentences[0].supporting_citation_indexes == (0,)
+
+
+def test_a_contradiction_vetoes_support(kb):
+    svc, review, fifteen, *_ = kb
+    from kgps.verify import Judgement
+
+    class Split:
+        name, version = "split", "1"
+
+        def check(self, claim, evidence):
+            if not evidence:
+                return Judgement(verdict=Verdict.NOT_ENTAILED, score=0.0)
+            if "15%" in evidence:
+                return Judgement(verdict=Verdict.CONTRADICTED, score=0.9)
+            return Judgement(verdict=Verdict.ENTAILED, score=0.9)
+
+    a = ans(("Something both say.", [review.assertion_id, fifteen.assertion_id]))
+    v = verify_answer(a, svc, Split())
+    s = v.sentences[0]
+    assert s.contradicted and not s.supported and v.unsupported == (0,)
+    assert v.score.faithfulness == 0.0 and v.score.supporting_citations == 0
+
+
+def test_a_raising_verifier_degrades_to_unverifiable(kb):
+    svc, review, fifteen, *_ = kb
+
+    class Boom:
+        name, version = "boom", "1"
+
+        def check(self, claim, evidence):
+            raise ValueError("model down")
+
+    a = ans(("Automated code review reduces post-release defects.", [review.assertion_id]))
+    v = verify_answer(a, svc, Boom())
+    assert v.sentences[0].checks[0].judgement.verdict is Verdict.UNVERIFIABLE
+    assert propose_supports(svc, Boom(), [review.assertion_id]) == ()
+    assert correct_answer(a, svc, Boom()).abstained
+
+
+def test_to_kgcs_trigger_builds_the_real_trigger(kb):
+    pytest.importorskip("kgcs.recuration.triggers")
+    svc, _, fifteen, *_ = kb
+    (p,) = propose_supports(svc, LEX, [fifteen.assertion_id],
+                            render=lambda _a: "defects fell by 15% in the study of 40 projects")
+    trig = p.to_kgcs_trigger()
+    assert trig.kind.value == "NEW_EVIDENCE" and trig.assertion_ids == (fifteen.assertion_id,)
+
+
+def test_uncited_sentences_kept_when_asked(kb):
+    svc, _, fifteen, *_ = kb
+    a = ans(("In summary:", []),
+            ("Defects fell by 15% across 40 projects after adoption.", [fifteen.assertion_id]))
+    strict = correct_answer(a, svc, LEX)
+    assert strict.answer is not None and len(strict.answer.sentences) == 1
+    lenient = correct_answer(a, svc, LEX, drop_uncited=False)
+    assert lenient.answer == a and not lenient.changed
+
+
+def test_http_verify_end_to_end(kb, tmp_path, chunk_evidence):
+    pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from kgis.evidence.store import SqliteEvidenceRegistry
+
+    from kgps.config import ReadOnlyRegistry
+    from kgps.http import create_router
+
+    _, _, fifteen, *_ = kb
+    evs, _ = chunk_evidence
+    db = tmp_path / "ev.db"
+    SqliteEvidenceRegistry(str(db)).put_many(evs)
+    svc = ProvenanceService(StaticAssertionCatalog((fifteen,)), ReadOnlyRegistry(db))
+    app = FastAPI()
+    app.include_router(create_router(svc))
+    a = ans(("Defects fell by 15% across 40 projects after adoption.", [fifteen.assertion_id]))
+    r = TestClient(app).post("/answers/verify", json=a.model_dump(mode="json"))
+    assert r.status_code == 200 and r.json()["score"]["faithfulness"] == 1.0

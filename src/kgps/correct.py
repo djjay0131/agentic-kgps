@@ -31,6 +31,7 @@ from kgps.verify import (
     Verifier,
     cited_links,
     evidence_text,
+    safe_check,
     verify_answer,
 )
 
@@ -77,13 +78,18 @@ class CorrectionResult(BaseModel):
 def _entailing_texts(
     svc: ProvenanceService, verifier: Verifier, text: str, assertion_id: str
 ) -> bool:
+    entailed = contradicted = False
     for link in cited_links(svc, assertion_id, ()):
         ev = evidence_text(link.evidence)
         if ev is None:
             continue
-        if verifier.check(text, ev).verdict is Verdict.ENTAILED:
-            return verifier.check(text, "").verdict is not Verdict.ENTAILED
-    return False
+        verdict = safe_check(verifier, text, ev).verdict
+        if verdict is Verdict.CONTRADICTED:
+            contradicted = True
+        elif verdict is Verdict.ENTAILED and not entailed:
+            # Try the next link if this support is only prior knowledge.
+            entailed = safe_check(verifier, text, "").verdict is not Verdict.ENTAILED
+    return entailed and not contradicted
 
 
 def _evidence_texts(svc: ProvenanceService, sentence: CitedSentence) -> list[str]:
@@ -115,6 +121,13 @@ def _rebuild(answer: GroundedAnswer, parts: Sequence[tuple[str, tuple[Citation, 
     )
 
 
+def _to_fix(v: AnswerVerification, drop_uncited: bool) -> set[int]:
+    bad = set(v.unsupported)
+    if drop_uncited:
+        bad |= set(v.uncited)
+    return bad
+
+
 def correct_answer(
     answer: GroundedAnswer,
     svc: ProvenanceService,
@@ -123,18 +136,31 @@ def correct_answer(
     retrieve: Retriever | None = None,
     regenerate: Regenerator | None = None,
     max_rounds: int = 2,
+    drop_uncited: bool = True,
 ) -> CorrectionResult:
+    """Repair or remove every sentence the verifier does not find supported.
+
+    ``drop_uncited`` (default on, PA-AKG strict mode): a sentence with no
+    citation is treated like an unsupported one — re-cited if ``retrieve``
+    finds entailing evidence, otherwise dropped. Turn it off to keep
+    connective prose ("In summary:") that makes no factual claim.
+    """
     if max_rounds < 1:
         raise ValueError("max_rounds must be >= 1")
     with span("correct_answer", {"kgps.trace_id": answer.trace_id}):
         initial = verify_answer(answer, svc, verifier)
         current: GroundedAnswer | None = answer
-        verification = initial
+        verification: AnswerVerification | None = initial
         corrections: list[SentenceCorrection] = []
         rounds = 0
-        while current is not None and verification.unsupported and rounds < max_rounds:
+        while (
+            current is not None
+            and verification is not None
+            and _to_fix(verification, drop_uncited)
+            and rounds < max_rounds
+        ):
             rounds += 1
-            bad = set(verification.unsupported)
+            bad = _to_fix(verification, drop_uncited)
             parts: list[tuple[str, tuple[Citation, ...]]] = []
             for i, sentence in enumerate(current.sentences):
                 if i not in bad:
@@ -149,26 +175,29 @@ def correct_answer(
                 elif fixed.action is CorrectionAction.REGENERATE and fixed.new_text:
                     parts.append((fixed.new_text, sentence.citations))
             current = _rebuild(answer, parts)
-            verification = verify_answer(current, svc, verifier) if current is not None else verification
-        final = verification if current is not None else None
-        if current is not None and final is not None and final.unsupported:
-            # Out of rounds: anything still unsupported is removed, not shipped.
-            keep = set(final.unsupported)
-            for i in sorted(keep):
+            verification = verify_answer(current, svc, verifier) if current is not None else None
+        # Out of rounds: prune whatever is still unsupported until the answer is
+        # stable (a non-deterministic judge may flip a verdict on re-check).
+        while current is not None and verification is not None:
+            keep_out = _to_fix(verification, drop_uncited)
+            if not keep_out:
+                break
+            for i in sorted(keep_out):
                 corrections.append(
                     SentenceCorrection(
                         round=rounds, original_text=current.sentences[i].text,
-                        action=CorrectionAction.ABSTAIN, reason="still unsupported after max_rounds",
+                        action=CorrectionAction.ABSTAIN,
+                        reason="still unsupported after max_rounds",
                     )
                 )
             current = _rebuild(
                 answer,
-                [(s.text, s.citations) for i, s in enumerate(current.sentences) if i not in keep],
+                [(s.text, s.citations) for i, s in enumerate(current.sentences) if i not in keep_out],
             )
-            final = verify_answer(current, svc, verifier) if current is not None else None
+            verification = verify_answer(current, svc, verifier) if current is not None else None
     return CorrectionResult(
         original=answer, answer=current, corrections=tuple(corrections),
-        initial=initial, final=final, rounds=rounds,
+        initial=initial, final=verification if current is not None else None, rounds=rounds,
     )
 
 
@@ -208,16 +237,15 @@ def _repair(
                 new = None
             if new and new.strip() and new != sentence.text:
                 new = new.strip()
-                for ev in texts:
-                    if verifier.check(new, ev).verdict is Verdict.ENTAILED:
-                        if verifier.check(new, "").verdict is Verdict.ENTAILED:
-                            break
-                        return SentenceCorrection(
-                            round=round_, original_text=sentence.text,
-                            action=CorrectionAction.REGENERATE, new_text=new,
-                            new_citations=tuple(c.assertion_id for c in sentence.citations),
-                            reason="rewritten to what the cited evidence says",
-                        )
+                verdicts = [safe_check(verifier, new, ev).verdict for ev in texts]
+                ok = Verdict.ENTAILED in verdicts and Verdict.CONTRADICTED not in verdicts
+                if ok and safe_check(verifier, new, "").verdict is not Verdict.ENTAILED:
+                    return SentenceCorrection(
+                        round=round_, original_text=sentence.text,
+                        action=CorrectionAction.REGENERATE, new_text=new,
+                        new_citations=tuple(c.assertion_id for c in sentence.citations),
+                        reason="rewritten to what the cited evidence says",
+                    )
     reason = "no entailing evidence found"
     if retrieve_error:
         reason += f" ({retrieve_error})"
