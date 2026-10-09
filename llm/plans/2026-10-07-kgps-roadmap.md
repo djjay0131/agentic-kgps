@@ -10,9 +10,14 @@ Design authority: `llm/specs/2026-10-07-kgps-design.md` §9.
 - [x] Grounding contracts: `GroundedAnswer`, `CitedSentence`, `Citation`, `ProvenanceEnvelope`, `build_provenance_graph`, `score_answer`
 - [x] Tests against real KGIS chunk evidence and the `kg_contracts` memory graph (25)
 
-## Wave 2 — exposure
+## Wave 2a — adopt upstream contracts (done, v0.2.0)
 
-- [ ] File upstream issues U1–U8 in agentic-kgis / agentic-kgcs
+- [x] Upstream U1–U8 + SYN merged; agentic-kgis v0.5.0 / v0.6.0 released
+- [x] ADR-0004: native `get_assertion`, `subjects_for`, typed spans, candidate join, successors
+
+## Wave 2b — exposure
+
+- [x] File upstream issues U1–U8 in agentic-kgis / agentic-kgcs
 - [ ] `kgps.mcp` server (stdio) with `kg_explain`, `kg_evidence_chain`, `kg_lineage`, `kg_impacted_by`, `kg_score_answer`
 - [ ] FastAPI router `kgps.http` mountable in agentic-kg
 - [ ] OpenTelemetry GenAI spans (optional extra)

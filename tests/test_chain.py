@@ -11,6 +11,11 @@ from conftest import NOW, PAPER, PROV
 from kgps import GapKind, ProvenanceService, StaticAssertionCatalog
 
 
+def mk(**kw):
+    """An assertion with a source candidate, so NO_SOURCE_CANDIDATE stays out of the way."""
+    return make_assertion(**kw).model_copy(update={"source_candidate_ids": ("cand_x",)})
+
+
 def svc(registry, *assertions):
     return ProvenanceService(StaticAssertionCatalog(assertions), registry)
 
@@ -21,7 +26,7 @@ def kinds(chain):
 
 def test_kgis_extraction_evidence_resolves_to_exact_source_span(registry, chunk_evidence):
     evs, refs = chunk_evidence
-    a = make_assertion(predicate="reduces_defects_by", object_value="15%", evidence_refs=(refs[1],))
+    a = mk(predicate="reduces_defects_by", object_value="15%", evidence_refs=(refs[1],))
     chain = svc(registry, a).evidence_chain(a.assertion_id)
 
     assert chain.grounded
@@ -35,13 +40,13 @@ def test_kgis_extraction_evidence_resolves_to_exact_source_span(registry, chunk_
 def test_supports_relationship_clears_the_verification_gap(registry, chunk_evidence):
     evs, _ = chunk_evidence
     ref = EvidenceRef(evidence_id=evs[1].evidence_id, relationship=EvidenceRelationship.SUPPORTS)
-    a = make_assertion(evidence_refs=(ref,))
+    a = mk(evidence_refs=(ref,))
     chain = svc(registry, a).evidence_chain(a.assertion_id)
     assert chain.grounded and chain.gaps == ()
 
 
 def test_no_refs_is_blocking(registry):
-    a = make_assertion()
+    a = mk()
     chain = svc(registry, a).evidence_chain(a.assertion_id)
     assert not chain.grounded
     assert kinds(chain) == {GapKind.NO_EVIDENCE_REFS}

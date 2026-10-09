@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentic-kgps"
-version = "0.1.0"
+version = "0.2.0"
 description = "Knowledge Graph Provenance Service (PA-AKG): read-side evidence chains, lineage, impact and grounded-answer provenance over KGIS/KGCS"
 requires-python = ">=3.11"
 # kg_contracts (Assertion, Evidence, EvidenceRef, Derivation, GraphReader) ships in
 # agentic-kgis. KGPS reads those records; it never writes canonical state
 # (ADR-0001). agentic-kgis is not on a package index: CI installs it from git.
-dependencies = ["agentic-kgis>=0.3.0"]
+dependencies = ["agentic-kgis>=0.6.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff==0.16.4", "mypy>=1.10"]

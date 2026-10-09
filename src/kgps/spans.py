@@ -1,14 +1,16 @@
-"""Parse the character spans KGIS encodes inside evidence locators.
+"""Character spans for evidence.
 
-KGIS extraction writes ``source_locator = f"{locator}#{fragment}"`` with
-``fragment = f"chunk:{i}@chars:{start}-{end}"`` (agentic-kgis
-``kgis/extraction/documents.py``). Structured sync writes key-field fragments
-that carry no span, and those parse to ``None``. This is the one place KGPS
-depends on that string format; it goes away when KGIS adds a typed span
-(design spec §7, upstream U1).
+Since kg_contracts 2.2.0 (agentic-kgis #56) evidence may carry a typed
+``Evidence.span`` (``TextSpan(start, end, quote)``); that is always preferred.
+Older evidence only encodes the span inside ``source_locator`` as
+``<locator>#chunk:<i>@chars:<start>-<end>``; ``parse_span`` recovers it so
+pre-2.2 rows remain explainable (decision D-006). Structured-sync fragments
+carry no span and yield ``None``.
 """
 
 import re
+
+from kg_contracts.evidence import Evidence
 
 from kgps.models import SourceSpan
 
@@ -16,7 +18,7 @@ _FRAGMENT = re.compile(r"^(?:chunk:(?P<chunk>\d+)@)?chars:(?P<start>\d+)-(?P<end
 
 
 def parse_span(source_locator: str) -> SourceSpan | None:
-    """Return the span in ``source_locator``, or ``None`` if it carries none."""
+    """Return the span encoded in ``source_locator``, or ``None`` if it carries none."""
     locator, sep, fragment = source_locator.rpartition("#")
     if not sep or not locator:
         return None
@@ -33,3 +35,20 @@ def parse_span(source_locator: str) -> SourceSpan | None:
         start=start,
         end=end,
     )
+
+
+def span_for(evidence: Evidence) -> SourceSpan | None:
+    """The best available span for ``evidence``: typed first, then the locator."""
+    parsed = parse_span(evidence.source_locator)
+    typed = getattr(evidence, "span", None)
+    if typed is not None and typed.end >= typed.start >= 0:
+        locator = parsed.locator if parsed is not None else evidence.source_locator
+        return SourceSpan(
+            locator=locator,
+            chunk_index=parsed.chunk_index if parsed is not None else None,
+            start=typed.start,
+            end=typed.end,
+            quote=typed.quote,
+            typed=True,
+        )
+    return parsed
