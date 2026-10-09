@@ -25,6 +25,7 @@ from kg_contracts.evidence import EvidenceAvailability, EvidenceRef, EvidenceRel
 
 from kgps.models import (
     GROUNDING_RELATIONSHIPS,
+    CurationDecision,
     EvidenceChain,
     EvidenceLink,
     Explanation,
@@ -36,6 +37,7 @@ from kgps.models import (
 from kgps.ports import (
     AssertionCatalog,
     CandidateRefLookup,
+    CurationAuditLookup,
     EvidenceLookup,
     EvidenceSubjectLookup,
 )
@@ -60,9 +62,11 @@ class ProvenanceService:
         assertions: AssertionCatalog,
         evidence: EvidenceLookup,
         *,
+        audit: CurationAuditLookup | None = None,
         max_depth: int = DEFAULT_MAX_DEPTH,
     ) -> None:
         self._assertions = assertions
+        self._audit = audit
         self._evidence = evidence
         self._max_depth = max_depth
         self._candidate_refs = evidence if isinstance(evidence, CandidateRefLookup) else None
@@ -111,12 +115,14 @@ class ProvenanceService:
             gaps += lineage_gaps
         successors, succ_gaps = self._walk_successors(assertion)
         gaps += succ_gaps
+        decisions = self._decisions_for(assertion_id, gaps)
         return EvidenceChain(
             assertion_id=assertion_id,
             assertion=assertion,
             links=links,
             lineage=lineage,
             successors=successors,
+            decisions=decisions,
             gaps=tuple(gaps),
         )
 
@@ -315,6 +321,40 @@ class ProvenanceService:
         return tuple(links), gaps
 
     # -- successors ----------------------------------------------------------
+
+    def _decisions_for(
+        self, assertion_id: str, gaps: list[ProvenanceGap]
+    ) -> tuple[CurationDecision, ...]:
+        """KGCS decisions recorded for this assertion, oldest first (D-019)."""
+        if self._audit is None:
+            return ()
+        audit = self._audit
+        before = len(gaps)
+        records = self._safe(
+            "curation audit lookup", assertion_id,
+            lambda: list(audit.records_for_assertion(assertion_id)), gaps, [],
+        )
+        decisions: list[CurationDecision] = []
+        for record in records:
+            try:
+                decisions.append(CurationDecision.from_record(record))
+            except Exception as exc:  # noqa: BLE001 — a malformed record is a gap
+                gaps.append(
+                    ProvenanceGap(
+                        kind=GapKind.STORE_ERROR,
+                        subject_id=assertion_id,
+                        detail=f"unreadable curation audit record: {type(exc).__name__}: {exc}",
+                    )
+                )
+        if not decisions and len(gaps) == before:
+            gaps.append(
+                ProvenanceGap(
+                    kind=GapKind.NO_CURATION_AUDIT,
+                    subject_id=assertion_id,
+                    detail="no KGCS curation decision is recorded for this assertion",
+                )
+            )
+        return tuple(decisions)
 
     @traced("successors", "kgps.assertion_id")
     def successors(self, assertion_id: str) -> tuple[str, ...]:
@@ -613,6 +653,18 @@ def _summarise(chain: EvidenceChain) -> str:
         lines.append(
             f"Derived via {a.derivation.method if a.derivation else '?'} "
             f"from {len(derived)} upstream record(s)."
+        )
+    for d in chain.decisions:
+        when = f" at {d.recorded_at.isoformat()}" if d.recorded_at else ""
+        extra = []
+        if d.review_action:
+            extra.append(f"review {d.review_action}/{d.review_status}")
+        if d.consulted_adviser:
+            extra.append("adviser consulted")
+        tail = f" ({', '.join(extra)})" if extra else ""
+        lines.append(
+            f"Curated: {d.decision_kind} decision {d.final_kind or '?'}{when}, "
+            f"audit {d.audit_id}{tail}."
         )
     if chain.successors:
         lines.append(

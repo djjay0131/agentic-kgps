@@ -12,11 +12,14 @@ KGPS is read-only over every store it touches (ADR-0001).
   2.2.0 ``GraphReader.get_assertion`` provides this natively;
   ``ReaderAssertionCatalog`` uses it and only falls back to a scan for
   iteration.
+* ``CurationAuditLookup`` — optional; KGCS's semantic audit sink
+  (``records_for_assertion``) so ``explain`` can say which curation decision
+  put the assertion there (decision D-019).
 * ``AssertionCatalog`` — lookup plus iteration, needed for reverse lineage
   through ``Derivation.inputs`` (no reverse derivation index exists upstream).
 """
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Protocol, runtime_checkable
 
 from kg_contracts.assertions import Assertion
@@ -47,6 +50,11 @@ class AssertionLookup(Protocol):
 @runtime_checkable
 class AssertionCatalog(AssertionLookup, Protocol):
     def iter_assertions(self) -> Iterator[Assertion]: ...
+
+
+@runtime_checkable
+class CurationAuditLookup(Protocol):
+    def records_for_assertion(self, assertion_id: str) -> Sequence[object]: ...
 
 
 HISTORY = GraphReadOptions(include_superseded=True, include_revoked=True)

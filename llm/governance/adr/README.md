@@ -13,3 +13,4 @@ KGPS-local decisions. System-level decisions for the KG stack live in
 | [0003](0003-provenance-gaps-are-data.md) | Provenance gaps are data, with a blocking / non-blocking split | Accepted |
 | [0004](0004-adopt-native-lookups-and-candidate-join.md) | Use native kg_contracts lookups and the ADR-0028 candidate join | Accepted |
 | [0005](0005-one-json-api-behind-mcp-and-http.md) | One JSON API behind the MCP and HTTP surfaces; optional extras | Accepted |
+| [0006](0006-curation-audit-join.md) | Join KGCS curation decisions into explanations through a duck-typed port | Accepted |

@@ -1,0 +1,184 @@
+{
+ "audit_id": "au_34T51001TDA7D9E79Z16V86VAM",
+ "decision_kind": "ASSERTION",
+ "trace_id": "trace-durable",
+ "trigger_id": "trg_09b6fe41120a14cbc38a228c",
+ "affected_refs": [
+  "kg://g1/identity/01M4H2JTGMSFKDAWATZY0M035Q",
+  "as_01M4H2JTGMV175CB0YYSA360GR",
+  "as_new_a"
+ ],
+ "baseline": {
+  "kind": "CONFLICT",
+  "rationale": "deterministic baseline: preserve both assertions and route to review until an adviser supplies cited evidence",
+  "review_required": true,
+  "conflict": true,
+  "plan_id": null,
+  "assertion_ids": []
+ },
+ "assessments": [
+  {
+   "adviser_type": "assertion",
+   "adviser_version": "assertion/1",
+   "model_id": "recorded/echo",
+   "model_version": "1",
+   "prompt_version": "1",
+   "recommendation": "supersedes",
+   "evidence_ids": [
+    "ev_new"
+   ],
+   "contradictions": [],
+   "confidence": null,
+   "abstained": false,
+   "rationale": "",
+   "trace_id": "trace-durable",
+   "rendered_evidence_ids": [],
+   "unresolved_evidence_ids": [],
+   "evidence_truncated": false,
+   "baseline_action_before": null,
+   "final_action_after": null
+  }
+ ],
+ "review": null,
+ "final": {
+  "kind": "SUPERSESSION",
+  "rationale": "superseded assertion as_01M4H2JTGMV175CB0YYSA360GR with as_new_a; old marked SUPERSEDED (preserved)",
+  "review_required": false,
+  "conflict": false,
+  "plan_id": "pl_5VSEQ6MHNP00RK6H4R19MK8H0G",
+  "assertion_ids": [
+   "as_01M4H2JTGMV175CB0YYSA360GR",
+   "as_new_a"
+  ]
+ },
+ "plan_id": "pl_5VSEQ6MHNP00RK6H4R19MK8H0G",
+ "execution": null,
+ "assertion_ids": [
+  "as_01M4H2JTGMV175CB0YYSA360GR",
+  "as_new_a"
+ ],
+ "operation_ids": [
+  "op_48G9VGXJZM9A3KA4QW4DTY3362",
+  "op_1BAZMF683FCNBETEQSM19GHZFZ"
+ ],
+ "source_candidate_ids": [],
+ "versions": {
+  "matcher_version": "rules/1",
+  "adviser_version": "assertion/1",
+  "model_id": "recorded/echo",
+  "model_version": "1",
+  "prompt_version": "1",
+  "policy_version": "1",
+  "ontology_version": null,
+  "profile_id": null,
+  "profile_version": null
+ },
+ "replay_inputs": {
+  "old_assertion": {
+   "assertion_id": "as_01M4H2JTGMV175CB0YYSA360GR",
+   "subject_identity": "kg://g1/identity/01M4H2JTGMSFKDAWATZY0M035Q",
+   "predicate": "proposed_year",
+   "object_value": 2015,
+   "object_identity": null,
+   "status": "ACTIVE",
+   "valid_period": {
+    "valid_from": null,
+    "valid_to": null
+   },
+   "recorded_at": "2026-07-12T00:00:00Z",
+   "superseded_at": null,
+   "scores": {
+    "extraction_confidence": 0.92,
+    "source_reliability": 0.9,
+    "identity_confidence": null,
+    "assertion_confidence": null,
+    "corroboration_score": null,
+    "policy_risk": 0.0
+   },
+   "evidence_refs": [],
+   "authority": "test-authority",
+   "provenance": {
+    "source": "test",
+    "source_ref": null,
+    "actor": "tester",
+    "model": null,
+    "model_version": null,
+    "prompt_version": null
+   },
+   "derivation": null,
+   "curation_epoch": 0,
+   "trace_id": "trace_01M4H2JTGMEXB3FK84N5Z69DD2",
+   "source_candidate_ids": [],
+   "superseded_by": null
+  },
+  "new_assertion": {
+   "assertion_id": "as_new_a",
+   "subject_identity": "kg://g1/identity/01M4H2JTGMSFKDAWATZY0M035Q",
+   "predicate": "proposed_year",
+   "object_value": 2014,
+   "object_identity": null,
+   "status": "ACTIVE",
+   "valid_period": {
+    "valid_from": null,
+    "valid_to": null
+   },
+   "recorded_at": "2026-07-13T00:00:00Z",
+   "superseded_at": null,
+   "scores": {
+    "extraction_confidence": 0.92,
+    "source_reliability": 0.9,
+    "identity_confidence": null,
+    "assertion_confidence": null,
+    "corroboration_score": null,
+    "policy_risk": 0.0
+   },
+   "evidence_refs": [],
+   "authority": "test-authority",
+   "provenance": {
+    "source": "test",
+    "source_ref": null,
+    "actor": "tester",
+    "model": null,
+    "model_version": null,
+    "prompt_version": null
+   },
+   "derivation": null,
+   "curation_epoch": 0,
+   "trace_id": "trace_01M4H2JTGNKG8JDD8ABV2JR8D8",
+   "source_candidate_ids": [],
+   "superseded_by": null
+  },
+  "recommendation": "supersedes",
+  "trigger": {
+   "trigger_id": "trg_09b6fe41120a14cbc38a228c",
+   "kind": "NEW_EVIDENCE",
+   "identity_ids": [
+    "kg://g1/identity/01M4H2JTGMSFKDAWATZY0M035Q"
+   ],
+   "assertion_ids": [
+    "as_01M4H2JTGMV175CB0YYSA360GR"
+   ],
+   "concept_keys": [],
+   "evidence_ids": [
+    "ev_new"
+   ],
+   "reason": "",
+   "trace_id": "trace-durable",
+   "version_context": {
+    "matcher_version": null,
+    "model_version": null,
+    "prompt_version": null,
+    "ontology_version": null,
+    "policy_version": null,
+    "source_authority": null
+   }
+  },
+  "supersession_allowed": true,
+  "snapshot_version": "1",
+  "matcher_version": "rules/1",
+  "adviser_version": "assertion/1",
+  "policy_version": "1",
+  "trace_id": "trace-durable"
+ },
+ "recorded_at": "2026-08-01T12:00:00Z"
+}

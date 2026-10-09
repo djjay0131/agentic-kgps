@@ -11,7 +11,9 @@ reconstructed is still returned, with each defect named as a
 assertion is *not grounded* (as opposed to *grounded, but weakly anchored*).
 """
 
+from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from kg_contracts.assertions import Assertion
 from kg_contracts.evidence import Evidence, EvidenceAvailability, EvidenceRelationship
@@ -63,6 +65,7 @@ class GapKind(StrEnum):
     UNRESOLVED_LINEAGE_INPUT = "UNRESOLVED_LINEAGE_INPUT"
     UNRESOLVED_SUCCESSOR = "UNRESOLVED_SUCCESSOR"
     STORE_ERROR = "STORE_ERROR"
+    NO_CURATION_AUDIT = "NO_CURATION_AUDIT"
     LINEAGE_CYCLE = "LINEAGE_CYCLE"
     LINEAGE_DEPTH_LIMIT = "LINEAGE_DEPTH_LIMIT"
 
@@ -147,6 +150,53 @@ class LineageNode(BaseModel):
     via: str = "derivation"
 
 
+class CurationDecision(BaseModel):
+    """A KGCS curation decision that touched an assertion (semantic audit, KGCS #48).
+
+    A read-side projection of ``kgcs`` ``AssertionSemanticAuditRecord`` /
+    ``SemanticAuditRecord``, built by duck typing so KGPS does not depend on
+    the agentic-kgcs package (ADR-0002, decision D-019). Only decision
+    metadata is kept; adviser prompts and replay inputs stay in KGCS.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    audit_id: str
+    decision_kind: str
+    final_kind: str | None = None
+    rationale: str = ""
+    trace_id: str = ""
+    plan_id: str | None = None
+    consulted_adviser: bool = False
+    review_action: str | None = None
+    review_status: str | None = None
+    recorded_at: datetime | None = None
+
+    @classmethod
+    def from_record(cls, record: Any) -> "CurationDecision":
+        final = getattr(record, "final", None)
+        review = getattr(record, "review", None)
+        kind = getattr(record, "decision_kind", "unknown")
+        return cls(
+            audit_id=str(getattr(record, "audit_id", "")),
+            decision_kind=str(getattr(kind, "value", kind)),
+            final_kind=_str_or_none(getattr(final, "kind", None)),
+            rationale=str(getattr(final, "rationale", "") or ""),
+            trace_id=str(getattr(record, "trace_id", "") or ""),
+            plan_id=getattr(record, "plan_id", None),
+            consulted_adviser=bool(getattr(record, "assessments", ())),
+            review_action=_str_or_none(getattr(review, "action", None)),
+            review_status=_str_or_none(getattr(review, "status", None)),
+            recorded_at=getattr(record, "recorded_at", None),
+        )
+
+
+def _str_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))
+
+
 class EvidenceChain(BaseModel):
     """Everything KGPS can reconstruct about why one assertion is in the graph.
 
@@ -163,6 +213,7 @@ class EvidenceChain(BaseModel):
     links: tuple[EvidenceLink, ...] = ()
     lineage: tuple[LineageNode, ...] = ()
     successors: tuple[str, ...] = ()
+    decisions: tuple[CurationDecision, ...] = ()
     gaps: tuple[ProvenanceGap, ...] = ()
 
     @property

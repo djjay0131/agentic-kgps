@@ -10,6 +10,10 @@ Resolution order:
    ``KGPS_ASSERTIONS_JSONL`` (one ``Assertion`` JSON object per line) — a
    self-contained, file-backed service for exports, demos and evaluation.
 
+``KGPS_AUDIT_DB`` optionally names an agentic-kgcs durable audit database;
+``explain`` then reports which curation decision put each assertion there
+(needs the ``kgcs`` package importable; decision D-019).
+
 ``KGPS_MAX_DEPTH`` optionally bounds lineage/supersession walks (>= 1).
 
 The evidence registry is opened read-only (SQLite ``mode=ro`` URI), one
@@ -39,6 +43,7 @@ FACTORY_ENV = "KGPS_SERVICE_FACTORY"
 EVIDENCE_DB_ENV = "KGPS_EVIDENCE_DB"
 ASSERTIONS_ENV = "KGPS_ASSERTIONS_JSONL"
 MAX_DEPTH_ENV = "KGPS_MAX_DEPTH"
+AUDIT_DB_ENV = "KGPS_AUDIT_DB"
 
 
 class ConfigError(RuntimeError):
@@ -128,6 +133,47 @@ class ReadOnlyRegistry:
         return result
 
 
+class ReadOnlyAudit:
+    """agentic-kgcs ``SqliteSemanticAuditSink`` per thread, each ``mode=ro``.
+
+    Satisfies ``kgps.ports.CurationAuditLookup``. KGPS never records audit
+    (that would be a write, ADR-0001); it only reads ``records_for_assertion``.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        p = Path(path)
+        if not p.is_file():
+            raise ConfigError(f"curation audit database not found: {p}")
+        try:
+            module = importlib.import_module("kgcs.persistence.sqlite")
+        except ImportError as exc:
+            raise ConfigError(
+                f"{AUDIT_DB_ENV} needs the agentic-kgcs package (kgcs) importable"
+            ) from exc
+        self._sink_cls = module.SqliteSemanticAuditSink
+        self._uri = f"{p.resolve().as_uri()}?mode=ro"
+        self._path = p
+        self._local = threading.local()
+        self._sink()  # fail fast on a missing or foreign schema
+
+    def _sink(self) -> Any:
+        sink = getattr(self._local, "sink", None)
+        if sink is None:
+            conn = sqlite3.connect(self._uri, uri=True)
+            try:
+                sink = self._sink_cls(conn)
+            except (sqlite3.Error, RuntimeError, ValueError) as exc:
+                conn.close()
+                raise ConfigError(
+                    f"{self._path} is not a readable KGCS semantic audit store: {exc}"
+                ) from exc
+            self._local.sink = sink
+        return sink
+
+    def records_for_assertion(self, assertion_id: str) -> list[object]:
+        return list(self._sink().records_for_assertion(assertion_id))
+
+
 def open_registry_readonly(path: str | Path) -> ReadOnlyRegistry:
     return ReadOnlyRegistry(path)
 
@@ -162,4 +208,8 @@ def service_from_env(env: Mapping[str, str] | None = None) -> ProvenanceService:
     if depth < 1:
         raise ConfigError(f"{MAX_DEPTH_ENV} must be >= 1")
     evidence = open_registry_readonly(db)
-    return ProvenanceService(load_assertions(assertions), evidence, max_depth=depth)
+    audit_db = env.get(AUDIT_DB_ENV)
+    audit = ReadOnlyAudit(audit_db) if audit_db else None
+    return ProvenanceService(
+        load_assertions(assertions), evidence, audit=audit, max_depth=depth
+    )
