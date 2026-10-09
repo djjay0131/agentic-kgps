@@ -31,20 +31,29 @@ from kgps.models import (
 from kgps.ports import (
     AssertionCatalog,
     AssertionLookup,
+    CandidateRefLookup,
     EvidenceLookup,
+    EvidenceSubjectLookup,
     GraphAssertionIndex,
+    ReaderAssertionCatalog,
     StaticAssertionCatalog,
+    catalog_for,
 )
 from kgps.service import ProvenanceService
-from kgps.spans import parse_span
+from kgps.spans import parse_span, span_for
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AgentRole",
     "AnswerScore",
     "AssertionCatalog",
     "AssertionLookup",
+    "CandidateRefLookup",
+    "EvidenceSubjectLookup",
+    "ReaderAssertionCatalog",
+    "catalog_for",
+    "span_for",
     "Citation",
     "CitedSentence",
     "EnvelopeKind",

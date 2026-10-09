@@ -19,12 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class SourceSpan(BaseModel):
-    """A character span inside a source document, parsed from a locator.
+    """A character span inside a source document.
 
-    KGIS encodes chunk spans inside ``Evidence.source_locator`` as
-    ``<locator>#chunk:<i>@chars:<start>-<end>``. Until KGIS gives spans a typed
-    field (see design spec §7, upstream U1), KGPS parses them here and nowhere
-    else.
+    Preferred source is the typed ``Evidence.span`` (kg_contracts >= 2.2.0,
+    agentic-kgis #56); ``typed=False`` marks a span recovered by parsing the
+    legacy ``<locator>#chunk:<i>@chars:<start>-<end>`` fragment instead.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -33,6 +32,8 @@ class SourceSpan(BaseModel):
     chunk_index: int | None = None
     start: int
     end: int
+    quote: str | None = None
+    typed: bool = False
 
     @property
     def length(self) -> int:
@@ -53,9 +54,14 @@ class GapKind(StrEnum):
     NO_SUPPORTS_RELATIONSHIP = "NO_SUPPORTS_RELATIONSHIP"
     CONTRADICTING_EVIDENCE = "CONTRADICTING_EVIDENCE"
     NO_SPAN = "NO_SPAN"
+    UNTYPED_SPAN = "UNTYPED_SPAN"
     HASH_ONLY_EVIDENCE = "HASH_ONLY_EVIDENCE"
+    REDACTED_EVIDENCE = "REDACTED_EVIDENCE"
     NOT_ACTIVE = "NOT_ACTIVE"
+    NO_SOURCE_CANDIDATE = "NO_SOURCE_CANDIDATE"
+    EVIDENCE_VIA_CANDIDATE = "EVIDENCE_VIA_CANDIDATE"
     UNRESOLVED_LINEAGE_INPUT = "UNRESOLVED_LINEAGE_INPUT"
+    UNRESOLVED_SUCCESSOR = "UNRESOLVED_SUCCESSOR"
     LINEAGE_CYCLE = "LINEAGE_CYCLE"
     LINEAGE_DEPTH_LIMIT = "LINEAGE_DEPTH_LIMIT"
 
@@ -85,7 +91,12 @@ class ProvenanceGap(BaseModel):
 
 
 class EvidenceLink(BaseModel):
-    """One assertion → evidence edge, with the evidence resolved if it exists."""
+    """One assertion → evidence edge, with the evidence resolved if it exists.
+
+    ``via_candidate`` is set when the edge was not cited on the assertion
+    itself but recovered through one of its ``source_candidate_ids`` and the
+    evidence registry's candidate-keyed refs (ADR-0028 join).
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -93,19 +104,28 @@ class EvidenceLink(BaseModel):
     relationship: EvidenceRelationship
     evidence: Evidence | None
     span: SourceSpan | None = None
+    via_candidate: str | None = None
 
     @property
     def resolved(self) -> bool:
         return self.evidence is not None
 
+    @property
+    def model_version(self) -> str | None:
+        if self.evidence is None:
+            return None
+        return getattr(self.evidence.provenance, "model_version", None)
+
 
 class LineageNode(BaseModel):
-    """A node reached by walking ``Derivation.inputs`` from an assertion.
+    """A node reached by walking ``Derivation.inputs`` (and candidate links).
 
     ``kind`` mirrors ``DerivationInput.kind`` (``assertion``, ``evidence``,
     ``artifact``, ``candidate``); the root assertion itself has kind
     ``assertion`` and depth 0. ``parent_ref`` is the node that consumed this
     one, so the list of nodes encodes the lineage DAG as parent edges.
+    ``via`` says which edge produced the node: ``derivation`` or
+    ``source_candidate`` (ADR-0028).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -117,13 +137,16 @@ class LineageNode(BaseModel):
     method: str | None = None
     implementation_version: str | None = None
     resolved: bool = True
+    via: str = "derivation"
 
 
 class EvidenceChain(BaseModel):
     """Everything KGPS can reconstruct about why one assertion is in the graph.
 
     ``assertion`` is ``None`` only when the id is unknown to the reader, in
-    which case ``gaps`` carries a single ``UNKNOWN_ASSERTION``.
+    which case ``gaps`` carries a single ``UNKNOWN_ASSERTION``. ``successors``
+    is the forward ``superseded_by`` chain (oldest first), so a superseded
+    assertion can be explained and its current replacement found.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -132,6 +155,7 @@ class EvidenceChain(BaseModel):
     assertion: Assertion | None
     links: tuple[EvidenceLink, ...] = ()
     lineage: tuple[LineageNode, ...] = ()
+    successors: tuple[str, ...] = ()
     gaps: tuple[ProvenanceGap, ...] = ()
 
     @property
@@ -146,28 +170,47 @@ class EvidenceChain(BaseModel):
             for link in self.links
             if link.evidence is not None
             and link.evidence.availability is EvidenceAvailability.PRESENT
-            and link.relationship is not EvidenceRelationship.CONTRADICTS
+            and link.relationship
+            in (EvidenceRelationship.SUPPORTS, EvidenceRelationship.DERIVED_FROM)
         )
+
+    @property
+    def source_candidate_ids(self) -> tuple[str, ...]:
+        if self.assertion is None:
+            return ()
+        return tuple(getattr(self.assertion, "source_candidate_ids", ()))
+
+    @property
+    def current_assertion_id(self) -> str:
+        """The latest record in the supersession chain (itself if not superseded)."""
+        return self.successors[-1] if self.successors else self.assertion_id
 
 
 class ImpactReport(BaseModel):
     """Assertions whose grounding depends on one piece of evidence (reverse lineage).
 
-    ``direct`` cite the evidence through ``evidence_refs``; ``transitive``
-    reach it only through ``Derivation.inputs`` of other assertions. Together
-    they are the re-validation set when that evidence is retracted, revised
-    or found wrong (design spec §4.4).
+    ``direct`` cite the evidence through ``evidence_refs`` or a derivation
+    input; ``via_candidates`` reach it because one of their
+    ``source_candidate_ids`` cites it in the evidence registry (ADR-0028);
+    ``transitive`` reach it only through ``Derivation.inputs`` of other
+    assertions. Together they are the re-validation set when that evidence is
+    retracted, revised or found wrong (design spec §4.4).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     evidence_id: str
     direct: tuple[str, ...] = ()
+    via_candidates: tuple[str, ...] = ()
     transitive: tuple[str, ...] = ()
+    citing_candidates: tuple[str, ...] = ()
 
     @property
     def needs_revalidation(self) -> tuple[str, ...]:
-        return self.direct + self.transitive
+        seen: dict[str, None] = {}
+        for a in (*self.direct, *self.via_candidates, *self.transitive):
+            seen.setdefault(a, None)
+        return tuple(seen)
 
 
 class Explanation(BaseModel):
