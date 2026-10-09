@@ -40,6 +40,7 @@ from kgps.ports import (
     EvidenceSubjectLookup,
 )
 from kgps.spans import span_for
+from kgps.telemetry import traced
 
 DEFAULT_MAX_DEPTH = 16
 _GROUNDING = GROUNDING_RELATIONSHIPS
@@ -84,6 +85,7 @@ class ProvenanceService:
 
     # -- evidence chain ------------------------------------------------------
 
+    @traced("evidence_chain", "kgps.assertion_id")
     def evidence_chain(self, assertion_id: str, *, with_lineage: bool = True) -> EvidenceChain:
         lookup_gaps: list[ProvenanceGap] = []
         assertion = self._safe(
@@ -314,8 +316,14 @@ class ProvenanceService:
 
     # -- successors ----------------------------------------------------------
 
+    @traced("successors", "kgps.assertion_id")
     def successors(self, assertion_id: str) -> tuple[str, ...]:
-        assertion = self._assertions.get_assertion(assertion_id)
+        # ADR-0003: a failing store yields an empty result, never an exception.
+        # Callers that need the reason use evidence_chain(), which carries gaps.
+        assertion = self._safe(
+            "assertion lookup", assertion_id,
+            lambda: self._assertions.get_assertion(assertion_id), [], None,
+        )
         if assertion is None:
             return ()
         chain, _ = self._walk_successors(assertion)
@@ -360,8 +368,14 @@ class ProvenanceService:
 
     # -- lineage -------------------------------------------------------------
 
+    @traced("lineage", "kgps.assertion_id")
     def lineage(self, assertion_id: str) -> tuple[LineageNode, ...]:
-        assertion = self._assertions.get_assertion(assertion_id)
+        # ADR-0003: a failing store yields an empty result, never an exception.
+        # Callers that need the reason use evidence_chain(), which carries gaps.
+        assertion = self._safe(
+            "assertion lookup", assertion_id,
+            lambda: self._assertions.get_assertion(assertion_id), [], None,
+        )
         if assertion is None:
             return ()
         nodes, _ = self._walk_lineage(assertion)
@@ -489,6 +503,7 @@ class ProvenanceService:
 
     # -- reverse lineage -----------------------------------------------------
 
+    @traced("impacted_by", "kgps.evidence_id")
     def impacted_by(self, evidence_id: str) -> ImpactReport:
         """Assertions that rest on ``evidence_id``, then everything derived from them."""
         citing_candidates: tuple[str, ...] = ()
@@ -548,6 +563,7 @@ class ProvenanceService:
 
     # -- explain -------------------------------------------------------------
 
+    @traced("explain", "kgps.assertion_id")
     def explain(self, assertion_id: str) -> Explanation:
         chain = self.evidence_chain(assertion_id)
         return Explanation(
