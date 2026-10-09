@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- MCP `kg_answer_prov`: PROV-O JSON-LD for a whole answer (parity with `POST /answers/prov`).
+
+### Changed
+- Design spec, README and memory bank brought up to v0.5.0; the spec's telemetry section now
+  matches what is emitted (`kgps.*` only).
+
 ## 0.5.0 — 2026-10-09
 
 Wave 4: retrieval routing, evaluation harness, PROV-O export (ADR-0008).
@@ -11,7 +20,7 @@ Wave 4: retrieval routing, evaluation harness, PROV-O export (ADR-0008).
   reciprocal-rank `fuse()`; `ProvenanceRouter` with a provenance gate (grounded only,
   supersession followed).
 - `kgps.harness`: B0 (dense RAG) / B1 (hybrid) / B2 (PA-AKG) pipelines over the same
-  cases, `ExtractiveGenerator` floor, `hide_gold_evidence` perturbation, computed
+  cases, `ExtractiveGenerator` floor, `Perturbation.HIDE_GOLD_EVIDENCE`, computed
   metrics (recall@k, gold-citation precision, chain completeness, faithfulness,
   abstention, ungrounded-citation rate) and a Markdown `table()`.
 - `kgps.export`: W3C PROV-O JSON-LD for chains and answers (no evidence text unless
