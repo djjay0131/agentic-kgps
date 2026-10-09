@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 2026-10-09
+
+Wave 2b: exposure (ADR-0005).
+
+### Added
+- `kgps.api.ProvenanceAPI`: JSON payloads for every query, with computed
+  `grounded`, gap `blocking`, `needs_revalidation` and score ratios.
+- `kgps.mcp_server` (`agentic-kgps[mcp]`, `kgps-mcp`): `kg_explain`,
+  `kg_evidence_chain`, `kg_lineage`, `kg_successors`, `kg_impacted_by`,
+  `kg_provenance_graph`, `kg_score_answer`. Works with mcp 1.x and 2.x.
+- `kgps.http` (`agentic-kgps[http]`, `kgps-http`): `create_router()` / `create_app()`.
+- `kgps.telemetry` (`agentic-kgps[otel]`): `kgps.<operation>` spans.
+- `kgps.config.service_from_env()`: factory or file-backed service; the
+  evidence registry is opened read-only.
+
+### Changed
+- `ProvenanceService.lineage()` / `successors()` no longer raise on store
+  failures (empty result; use `evidence_chain()` for the gap).
+
 ## 0.2.0 — 2026-10-09
 
 Wave 2a: adopt the upstream provenance contracts (ADR-0004). Requires

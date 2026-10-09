@@ -18,9 +18,9 @@ Design authority: `llm/specs/2026-10-07-kgps-design.md` §9.
 ## Wave 2b — exposure
 
 - [x] File upstream issues U1–U8 in agentic-kgis / agentic-kgcs
-- [ ] `kgps.mcp` server (stdio) with `kg_explain`, `kg_evidence_chain`, `kg_lineage`, `kg_impacted_by`, `kg_score_answer`
-- [ ] FastAPI router `kgps.http` mountable in agentic-kg
-- [ ] OpenTelemetry GenAI spans (optional extra)
+- [x] `kgps.mcp_server` (stdio/SSE/streamable-http) — seven tools, mcp 1.x and 2.x (ADR-0005)
+- [x] FastAPI router `kgps.http` mountable in agentic-kg (ADR-0005)
+- [x] OpenTelemetry spans (optional extra; ids and counts only)
 - [ ] KGCS audit join in `explain` (after U3/U5)
 - [ ] Neo4j `AssertionCatalog`/`EvidenceLookup` adapter for agentic-kg (pre-adoption bridge)
 

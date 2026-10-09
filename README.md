@@ -35,10 +35,22 @@ print(svc.explain("as_01J...").summary)
 Inter-agent messages use `ProvenanceEnvelope`, which refuses to be built
 without citations, an answer, or an explicit abstention.
 
+### Servers
+
+```bash
+pip install 'agentic-kgps[mcp,http,otel]'
+export KGPS_SERVICE_FACTORY=myapp.wiring:provenance_service   # or:
+export KGPS_EVIDENCE_DB=evidence.db KGPS_ASSERTIONS_JSONL=assertions.jsonl
+kgps-mcp                 # MCP tools for agents (stdio)
+kgps-http --port 8765    # REST; or mount kgps.http.create_router(svc) in your app
+```
+
 ## Status
 
-Wave 1 (v0.1.0): provenance query, grounding contracts, first answer metrics.
-Next: MCP + HTTP surfaces, OpenTelemetry spans, verifier. See
+v0.1.0 wave 1 (provenance query, grounding contracts); v0.2.0 wave 2a
+(upstream contracts adopted); v0.3.0 wave 2b (MCP, HTTP, OpenTelemetry).
+Next: verifier and correction loop (wave 3), retrieval routing and
+evaluation (wave 4). See
 `llm/plans/2026-10-07-kgps-roadmap.md`.
 
 ## Develop
