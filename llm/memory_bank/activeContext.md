@@ -1,7 +1,11 @@
 # Active context (2026-10-09)
 
-- v0.2.0 (wave 2a) merged: upstream contracts adopted (ADR-0004).
-- Wave 2b in progress: MCP / HTTP / OpenTelemetry surfaces over one JSON API (ADR-0005).
-- Remaining wave 2b: KGCS audit join in `explain`; agentic-kg Neo4j bridge adapter.
-- Then wave 3 (verifier, correction loop), wave 4 (routing, B0/B1/B2 harness, PROV-O export).
-- Decisions are logged in the claude.ai project doc `claude/kgps-decision-log.md` (D-001…).
+- Waves 1–4 built and released (v0.1.0 … v0.5.0). Every PR passed an independent review
+  and a fix round; all decisions are in the claude.ai project doc `claude/kgps-decision-log.md`.
+- Next is wave 5 (case studies), which needs consumer adoption and owner inputs:
+  - agentic-kg: Neo4j `AssertionCatalog`/`EvidenceLookup` adapter (or kg_contracts adoption),
+    mount `kgps.http.create_router`, run the harness on the 8-paper ground-truth chain.
+  - an NLI verifier and a human-calibration sample before any model-judged number is reported.
+  - nanopub packaging (needs signing keys and a publication target).
+- Known limits: the lexical verifier and extractive generator are floors; graph expansion skips
+  hub identities above 50 members; `AssertionDocuments` rebuilds by full scan.

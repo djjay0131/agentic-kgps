@@ -1,7 +1,7 @@
 # KGPS — Knowledge Graph Provenance Service (PA-AKG) — Design
 
-Status: Draft v0.1 (design authority for this repo)
-Date: 2026-10-07
+Status: v0.5 — waves 1–4 built (design authority for this repo)
+Date: 2026-10-07 (updated 2026-10-09)
 Owner: Jason Cusati
 Origin: PA-AKG proposal. See `amazon-vt-cfp-2026/archive/pa-akg-proposal.md`, `abstract_v2/`, and
 `aws-agentic-ai-proposal/main.tex` (submitted 2026-05-13, Brown PI).
@@ -176,12 +176,14 @@ Data and plumbing:
 - **MCP server** (wave 2). Tools `kg_explain`, `kg_evidence_chain`, `kg_lineage`,
   `kg_impacted_by` and `kg_score_answer`. This is how Claude Code, OpenCode on vt-arc, and the
   agents themselves use provenance.
-- **HTTP** (wave 2). `GET /assertions/{id}/explain`, `/chain`, `/lineage`;
-  `GET /evidence/{id}/impact`; `POST /answers/provenance`. Mounted into the agentic-kg FastAPI app
+- **HTTP** (built). `GET /assertions/{id}/explain`, `/chain`, `/lineage`, `/successors`,
+  `/prov`; `GET /evidence/{id}/impact`; `POST /answers/provenance`, `/score`, `/verify`, `/prov`. Mounted into the agentic-kg FastAPI app
   as a router before it becomes a standalone deployment.
-- **OpenTelemetry GenAI spans** (wave 2): `gen_ai.*` attributes plus `kgps.trace_id`,
-  `kgps.citations`, `kgps.grounded`. A PROV-O / nanopub export of a `ProvenanceGraph` comes in
-  wave 4.
+- **OpenTelemetry spans** (built, ADR-0005): `kgps.<operation>` spans with `kgps.*`
+  attributes — subject and trace ids, `kgps.grounded`, gap/link/impact counts, blocking gap
+  kinds, verifier name — identifiers and counts only. `gen_ai.*` attributes belong to the host
+  that calls the model, not to KGPS, and are not emitted. PROV-O JSON-LD export of chains and
+  answers is built (wave 4, ADR-0008); nanopub packaging is wave 5.
 
 ### Consumers
 
@@ -202,16 +204,19 @@ Data and plumbing:
 | Wave | Content | Status |
 |---|---|---|
 | 1 | Models, ports, `ProvenanceService` (chain, lineage, impact, explain), grounding contracts, envelope, provenance graph, three answer metrics, tests against real KGIS evidence | **Built** (v0.1.0) |
-| 2 | MCP and HTTP surfaces; OpenTelemetry GenAI spans; KGCS audit join (`explain` shows curation decisions, needs U3/U5); Neo4j adapter for agentic-kg | Next |
-| 3 | Verifier (NLI and LLM-judge with calibration), correction loop, `SUPPORTS` upgrade proposals to KGCS; faithfulness and minimality metrics; drop-the-evidence control | |
-| 4 | Retrieval routing contract (dense, sparse, graph) and supervisor orchestration; B0/B1/B2 harness; PROV-O / nanopub export | |
-| 5 | Case studies: agentic-kg R-3 (FoSE corpus), baseball-ai plan explanations, AutoPyDep | |
+| 2a | Adopt upstream contracts: native lookup, candidate join, typed spans, supersession (ADR-0004) | **Built** (v0.2.0) |
+| 2b | MCP and HTTP surfaces; OpenTelemetry spans; KGCS audit join (ADR-0005, ADR-0006). The agentic-kg Neo4j adapter moved to wave 5 | **Built** (v0.3.0) |
+| 3 | Verifier protocol (lexical baseline + LLM judge), drop-the-evidence control, correction loop, `SUPPORTS`/contradiction proposals for KGCS; faithfulness, citation precision and minimality (ADR-0007). The NLI model and calibration set moved to wave 5 | **Built** (v0.4.0) |
+| 4 | Retrieval routing (dense, sparse, graph) with a provenance gate; B0/B1/B2 harness with perturbation; PROV-O JSON-LD export (ADR-0008). Nanopub packaging moved to wave 5 | **Built** (v0.5.0) |
+| 5 | Case studies: agentic-kg R-3 (FoSE corpus) incl. Neo4j adapter and the harness on the ground-truth chain; NLI verifier + human calibration; nanopub packaging; baseball-ai plan explanations; AutoPyDep | Next |
 
 ## 10. Open questions
 
 - Should a store-native `AssertionCatalog` live here (adapters) or in each consumer? The leaning is
   here, under `kgps.adapters.*`, as optional extras.
 - Is the verifier an NLI model (cheap, deterministic) or an LLM judge on vt-arc, or both with
-  disagreement routed to humans? The `tsaneva2025hil` evidence favours both.
+  disagreement routed to humans? The `tsaneva2025hil` evidence favours both. *Partly settled
+  (ADR-0007): the protocol takes both; a deterministic lexical floor ships; the NLI model and
+  the human-calibration set are wave 5.*
 - Is the paper an evaluated end-to-end chain (P2 in `papers-to-progress-alignment.md`) or a
   separate tool paper? Decide after wave 3 data.
