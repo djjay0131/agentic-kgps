@@ -13,7 +13,10 @@ Wave 2b: exposure (ADR-0005).
 - `kgps.http` (`agentic-kgps[http]`, `kgps-http`): `create_router()` / `create_app()`.
 - `kgps.telemetry` (`agentic-kgps[otel]`): `kgps.<operation>` spans.
 - `kgps.config.service_from_env()`: factory or file-backed service; the
-  evidence registry is opened read-only.
+  evidence registry is opened read-only, one connection per thread.
+- KGCS curation decisions in explanations (ADR-0006): `CurationAuditLookup`,
+  `CurationDecision`, `EvidenceChain.decisions`, `NO_CURATION_AUDIT` gap,
+  `KGPS_AUDIT_DB`.
 
 ### Changed
 - `ProvenanceService.lineage()` / `successors()` no longer raise on store

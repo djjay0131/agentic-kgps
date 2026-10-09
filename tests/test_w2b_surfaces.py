@@ -303,6 +303,7 @@ def test_spans_are_emitted_without_payloads(world):
 
     spans = {s.name: s for s in exporter.get_finished_spans()}
     assert {"kgps.explain", "kgps.evidence_chain", "kgps.score_answer"} <= set(spans)
+    assert "kgps.successors" not in spans  # private helpers are not traced
     ex = spans["kgps.explain"].attributes
     assert ex["kgps.assertion_id"] == claim.assertion_id and ex["kgps.grounded"] is True
     bare_span = [

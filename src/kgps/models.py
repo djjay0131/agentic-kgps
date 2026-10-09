@@ -11,7 +11,9 @@ reconstructed is still returned, with each defect named as a
 assertion is *not grounded* (as opposed to *grounded, but weakly anchored*).
 """
 
+from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from kg_contracts.assertions import Assertion
 from kg_contracts.evidence import Evidence, EvidenceAvailability, EvidenceRelationship
@@ -63,6 +65,7 @@ class GapKind(StrEnum):
     UNRESOLVED_LINEAGE_INPUT = "UNRESOLVED_LINEAGE_INPUT"
     UNRESOLVED_SUCCESSOR = "UNRESOLVED_SUCCESSOR"
     STORE_ERROR = "STORE_ERROR"
+    NO_CURATION_AUDIT = "NO_CURATION_AUDIT"
     LINEAGE_CYCLE = "LINEAGE_CYCLE"
     LINEAGE_DEPTH_LIMIT = "LINEAGE_DEPTH_LIMIT"
 
@@ -147,6 +150,86 @@ class LineageNode(BaseModel):
     via: str = "derivation"
 
 
+class CurationDecision(BaseModel):
+    """A KGCS curation decision that touched an assertion (semantic audit, KGCS #48).
+
+    A read-side projection of a KGCS ``AssertionSemanticAuditRecord`` (or ER
+    ``SemanticAuditRecord``), given either as the stored JSON ``dict`` or as a
+    typed object. Built by duck typing so KGPS does not depend on the
+    agentic-kgcs package (ADR-0002, ADR-0006). Only decision metadata is kept;
+    adviser prompts and replay inputs stay in KGCS.
+
+    ``role`` says how the explained assertion took part: ``prior`` (the record
+    the decision acted on, e.g. the superseded one), ``resulting`` (the record
+    it produced) or ``affected`` (named, neither of those).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    audit_id: str
+    decision_kind: str
+    final_kind: str | None = None
+    rationale: str = ""
+    trace_id: str = ""
+    plan_id: str | None = None
+    consulted_adviser: bool = False
+    review_action: str | None = None
+    review_status: str | None = None
+    recorded_at: datetime | None = None
+    role: str | None = None
+
+    @classmethod
+    def from_record(cls, record: Any, assertion_id: str | None = None) -> "CurationDecision":
+        final = _get(record, "final")
+        review = _get(record, "review")
+        kind = _get(record, "decision_kind") or "unknown"
+        # Assertion decisions carry `final.kind`; ER decisions `final.action`.
+        final_kind = _get(final, "kind")
+        if final_kind is None:
+            final_kind = _get(final, "action")
+        assessments = _get(record, "assessments") or ()
+        return cls(
+            audit_id=str(_get(record, "audit_id") or ""),
+            decision_kind=str(_enum_value(kind)),
+            final_kind=_str_or_none(final_kind),
+            rationale=str(_get(final, "rationale") or ""),
+            trace_id=str(_get(record, "trace_id") or ""),
+            plan_id=_get(record, "plan_id"),
+            consulted_adviser=any(not _get(x, "abstained") for x in assessments),
+            review_action=_str_or_none(_get(review, "action")),
+            review_status=_str_or_none(_get(review, "status")),
+            recorded_at=_get(record, "recorded_at"),
+            role=_role(record, assertion_id),
+        )
+
+
+def _get(obj: Any, key: str) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _str_or_none(value: object) -> str | None:
+    return None if value is None else str(_enum_value(value))
+
+
+def _role(record: Any, assertion_id: str | None) -> str | None:
+    if assertion_id is None:
+        return None
+    replay = _get(record, "replay_inputs")
+    if _get(_get(replay, "old_assertion"), "assertion_id") == assertion_id:
+        return "prior"
+    if _get(_get(replay, "new_assertion"), "assertion_id") == assertion_id:
+        return "resulting"
+    return "affected"
+
+
 class EvidenceChain(BaseModel):
     """Everything KGPS can reconstruct about why one assertion is in the graph.
 
@@ -163,6 +246,7 @@ class EvidenceChain(BaseModel):
     links: tuple[EvidenceLink, ...] = ()
     lineage: tuple[LineageNode, ...] = ()
     successors: tuple[str, ...] = ()
+    decisions: tuple[CurationDecision, ...] = ()
     gaps: tuple[ProvenanceGap, ...] = ()
 
     @property

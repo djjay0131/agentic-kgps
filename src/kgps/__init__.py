@@ -20,6 +20,7 @@ from kgps.grounding import (
     score_answer,
 )
 from kgps.models import (
+    CurationDecision,
     EvidenceChain,
     EvidenceLink,
     Explanation,
@@ -33,6 +34,7 @@ from kgps.ports import (
     AssertionCatalog,
     AssertionLookup,
     CandidateRefLookup,
+    CurationAuditLookup,
     EvidenceLookup,
     EvidenceSubjectLookup,
     GraphAssertionIndex,
@@ -56,6 +58,8 @@ __all__ = [
     "catalog_for",
     "span_for",
     "Citation",
+    "CurationAuditLookup",
+    "CurationDecision",
     "CitedSentence",
     "EnvelopeKind",
     "EvidenceChain",

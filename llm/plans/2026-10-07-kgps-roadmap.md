@@ -21,8 +21,8 @@ Design authority: `llm/specs/2026-10-07-kgps-design.md` §9.
 - [x] `kgps.mcp_server` (stdio/SSE/streamable-http) — seven tools, mcp 1.x and 2.x (ADR-0005)
 - [x] FastAPI router `kgps.http` mountable in agentic-kg (ADR-0005)
 - [x] OpenTelemetry spans (optional extra; ids and counts only)
-- [ ] KGCS audit join in `explain` (after U3/U5)
-- [ ] Neo4j `AssertionCatalog`/`EvidenceLookup` adapter for agentic-kg (pre-adoption bridge)
+- [x] KGCS audit join in `explain` (ADR-0006)
+- [ ] ~~Neo4j adapter for agentic-kg~~ → moved to wave 5 (D-020): agentic-kg wires KGPS via `KGPS_SERVICE_FACTORY` once it reads kg_contracts records
 
 ## Wave 3 — verifier and correction
 
