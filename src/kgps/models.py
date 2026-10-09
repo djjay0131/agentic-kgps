@@ -62,17 +62,24 @@ class GapKind(StrEnum):
     EVIDENCE_VIA_CANDIDATE = "EVIDENCE_VIA_CANDIDATE"
     UNRESOLVED_LINEAGE_INPUT = "UNRESOLVED_LINEAGE_INPUT"
     UNRESOLVED_SUCCESSOR = "UNRESOLVED_SUCCESSOR"
+    STORE_ERROR = "STORE_ERROR"
     LINEAGE_CYCLE = "LINEAGE_CYCLE"
     LINEAGE_DEPTH_LIMIT = "LINEAGE_DEPTH_LIMIT"
 
 
+# ADR-0004 §8: `grounded` <=> at least one PRESENT grounding evidence resolves.
+# A dangling ref is reported but no longer blocks on its own; when nothing else
+# grounds the assertion, NO_PRESENT_EVIDENCE does.
 BLOCKING_GAPS: frozenset[GapKind] = frozenset(
     {
         GapKind.NO_EVIDENCE_REFS,
-        GapKind.DANGLING_EVIDENCE_REF,
         GapKind.NO_PRESENT_EVIDENCE,
         GapKind.UNKNOWN_ASSERTION,
     }
+)
+
+GROUNDING_RELATIONSHIPS: frozenset[EvidenceRelationship] = frozenset(
+    {EvidenceRelationship.SUPPORTS, EvidenceRelationship.DERIVED_FROM}
 )
 
 
@@ -170,8 +177,7 @@ class EvidenceChain(BaseModel):
             for link in self.links
             if link.evidence is not None
             and link.evidence.availability is EvidenceAvailability.PRESENT
-            and link.relationship
-            in (EvidenceRelationship.SUPPORTS, EvidenceRelationship.DERIVED_FROM)
+            and link.relationship in GROUNDING_RELATIONSHIPS
         )
 
     @property
@@ -204,6 +210,8 @@ class ImpactReport(BaseModel):
     via_candidates: tuple[str, ...] = ()
     transitive: tuple[str, ...] = ()
     citing_candidates: tuple[str, ...] = ()
+    """Registry subjects citing the evidence; in KGIS these are candidate ids."""
+    errors: tuple[ProvenanceGap, ...] = ()
 
     @property
     def needs_revalidation(self) -> tuple[str, ...]:

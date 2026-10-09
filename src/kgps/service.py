@@ -24,6 +24,7 @@ from kg_contracts.assertions import Assertion, CurationStatus
 from kg_contracts.evidence import EvidenceAvailability, EvidenceRef, EvidenceRelationship
 
 from kgps.models import (
+    GROUNDING_RELATIONSHIPS,
     EvidenceChain,
     EvidenceLink,
     Explanation,
@@ -41,7 +42,11 @@ from kgps.ports import (
 from kgps.spans import span_for
 
 DEFAULT_MAX_DEPTH = 16
-_GROUNDING = frozenset({EvidenceRelationship.SUPPORTS, EvidenceRelationship.DERIVED_FROM})
+_GROUNDING = GROUNDING_RELATIONSHIPS
+
+
+class _StoreError(Exception):
+    """A read from a store failed; converted into a STORE_ERROR gap (ADR-0003)."""
 
 
 def _source_candidates(assertion: Assertion) -> tuple[str, ...]:
@@ -62,15 +67,34 @@ class ProvenanceService:
         self._candidate_refs = evidence if isinstance(evidence, CandidateRefLookup) else None
         self._subjects = evidence if isinstance(evidence, EvidenceSubjectLookup) else None
 
+    # -- safe store access (ADR-0003: reads never raise) -----------------------
+
+    def _safe(self, what: str, subject: str, fn, gaps: list[ProvenanceGap], default):  # type: ignore[no-untyped-def]
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — any store failure becomes a gap
+            gaps.append(
+                ProvenanceGap(
+                    kind=GapKind.STORE_ERROR,
+                    subject_id=subject,
+                    detail=f"{what} failed: {type(exc).__name__}: {exc}",
+                )
+            )
+            return default
+
     # -- evidence chain ------------------------------------------------------
 
     def evidence_chain(self, assertion_id: str, *, with_lineage: bool = True) -> EvidenceChain:
-        assertion = self._assertions.get_assertion(assertion_id)
+        lookup_gaps: list[ProvenanceGap] = []
+        assertion = self._safe(
+            "assertion lookup", assertion_id,
+            lambda: self._assertions.get_assertion(assertion_id), lookup_gaps, None,
+        )
         if assertion is None:
             return EvidenceChain(
                 assertion_id=assertion_id,
                 assertion=None,
-                gaps=(
+                gaps=tuple(lookup_gaps) + (
                     ProvenanceGap(
                         kind=GapKind.UNKNOWN_ASSERTION,
                         subject_id=assertion_id,
@@ -100,7 +124,7 @@ class ProvenanceService:
         """Assertion-cited refs first; candidate-cited refs only add new evidence ids."""
         gaps: list[ProvenanceGap] = []
         refs: list[tuple[EvidenceRef, str | None]] = [(r, None) for r in assertion.evidence_refs]
-        seen = {r.evidence_id for r in assertion.evidence_refs}
+        seen = {(r.evidence_id, r.relationship) for r in assertion.evidence_refs}
         candidates = _source_candidates(assertion)
         if not candidates and assertion.derivation is None:
             gaps.append(
@@ -112,11 +136,16 @@ class ProvenanceService:
             )
         if self._candidate_refs is not None:
             added = 0
+            lookup = self._candidate_refs
             for cid in candidates:
-                for ref in self._candidate_refs.refs_for(cid):
-                    if ref.evidence_id in seen:
+                cand_refs = self._safe(
+                    "candidate refs lookup", cid, lambda c=cid: lookup.refs_for(c), gaps, []
+                )
+                for ref in cand_refs:
+                    key = (ref.evidence_id, ref.relationship)
+                    if key in seen:
                         continue
-                    seen.add(ref.evidence_id)
+                    seen.add(key)
                     refs.append((ref, cid))
                     added += 1
             if added and not assertion.evidence_refs:
@@ -161,7 +190,10 @@ class ProvenanceService:
         redaction = getattr(self._evidence, "redaction", None)
         links: list[EvidenceLink] = []
         for ref, via in refs:
-            ev = self._evidence.get(ref.evidence_id)
+            ev = self._safe(
+                "evidence lookup", ref.evidence_id,
+                lambda r=ref: self._evidence.get(r.evidence_id), gaps, None,
+            )
             span = span_for(ev) if ev is not None else None
             links.append(
                 EvidenceLink(
@@ -177,7 +209,10 @@ class ProvenanceService:
                     ProvenanceGap(
                         kind=GapKind.DANGLING_EVIDENCE_REF,
                         subject_id=ref.evidence_id,
-                        detail=f"{aid} cites evidence the registry does not hold",
+                        detail=(
+                            f"{aid} cites evidence the registry does not hold"
+                            + (f" (via candidate {via})" if via else "")
+                        ),
                     )
                 )
                 continue
@@ -199,7 +234,14 @@ class ProvenanceService:
                     )
                 )
             else:
-                marker = redaction(ev.evidence_id) if callable(redaction) else None
+                marker = (
+                    self._safe(
+                        "redaction lookup", ev.evidence_id,
+                        lambda e=ev: redaction(e.evidence_id), gaps, None,
+                    )
+                    if callable(redaction)
+                    else None
+                )
                 if marker is not None and marker[0] is not None:
                     gaps.append(
                         ProvenanceGap(
@@ -301,7 +343,9 @@ class ProvenanceService:
                 break
             seen.add(nxt)
             chain.append(nxt)
-            following = self._assertions.get_assertion(nxt)
+            following = self._safe(
+                "successor lookup", nxt, lambda n=nxt: self._assertions.get_assertion(n), gaps, None
+            )
             if following is None:
                 gaps.append(
                     ProvenanceGap(
@@ -376,7 +420,10 @@ class ProvenanceService:
                         )
                         continue
                     seen.add(item.ref)
-                    child = self._assertions.get_assertion(item.ref)
+                    child = self._safe(
+                        "lineage lookup", item.ref,
+                        lambda r=item.ref: self._assertions.get_assertion(r), gaps, None,
+                    )
                     nodes.append(
                         LineageNode(
                             kind="assertion",
@@ -403,7 +450,13 @@ class ProvenanceService:
                     else:
                         queue.append((child, child_depth))
                 elif item.kind == "evidence":
-                    resolved = self._evidence.get(item.ref) is not None
+                    resolved = (
+                        self._safe(
+                            "lineage evidence lookup", item.ref,
+                            lambda r=item.ref: self._evidence.get(r), gaps, None,
+                        )
+                        is not None
+                    )
                     nodes.append(
                         LineageNode(
                             kind="evidence",
@@ -439,14 +492,27 @@ class ProvenanceService:
     def impacted_by(self, evidence_id: str) -> ImpactReport:
         """Assertions that rest on ``evidence_id``, then everything derived from them."""
         citing_candidates: tuple[str, ...] = ()
+        errors: list[ProvenanceGap] = []
         if self._subjects is not None:
-            citing_candidates = tuple(dict.fromkeys(self._subjects.subjects_for(evidence_id)))
+            subjects = self._subjects
+            citing_candidates = tuple(
+                dict.fromkeys(
+                    self._safe(
+                        "reverse evidence lookup", evidence_id,
+                        lambda: subjects.subjects_for(evidence_id), errors, [],
+                    )
+                )
+            )
         candidate_set = set(citing_candidates)
 
         direct: list[str] = []
         via_candidates: list[str] = []
         consumers: dict[str, list[str]] = {}
-        for a in self._assertions.iter_assertions():
+        assertions = self._safe(
+            "assertion scan", evidence_id,
+            lambda: tuple(self._assertions.iter_assertions()), errors, (),
+        )
+        for a in assertions:
             if any(ref.evidence_id == evidence_id for ref in a.evidence_refs):
                 direct.append(a.assertion_id)
             elif candidate_set and candidate_set.intersection(_source_candidates(a)):
@@ -475,8 +541,9 @@ class ProvenanceService:
             evidence_id=evidence_id,
             direct=tuple(sorted(direct_unique)),
             via_candidates=tuple(sorted(via_unique)),
-            transitive=tuple(transitive),
+            transitive=tuple(sorted(transitive)),
             citing_candidates=citing_candidates,
+            errors=tuple(errors),
         )
 
     # -- explain -------------------------------------------------------------

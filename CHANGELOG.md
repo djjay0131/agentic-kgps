@@ -18,6 +18,10 @@ Wave 2a: adopt the upstream provenance contracts (ADR-0004). Requires
   `REDACTED_EVIDENCE`, `UNRESOLVED_SUCCESSOR`.
 
 ### Changed
+- `grounded` ⇔ at least one PRESENT grounding evidence; `DANGLING_EVIDENCE_REF` is
+  no longer blocking on its own (amends ADR-0003).
+- Store read failures become `STORE_ERROR` gaps instead of exceptions.
+- Native lookup only when the adapter advertises `supports_assertion_lookup`.
 - Grounding counts only PRESENT `SUPPORTS`/`DERIVED_FROM` evidence
   (CONTEXTUALIZES no longer grounds), matching kg_eval.
 

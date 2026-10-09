@@ -21,7 +21,7 @@ from typing import Protocol, runtime_checkable
 
 from kg_contracts.assertions import Assertion
 from kg_contracts.evidence import Evidence, EvidenceRef
-from kg_contracts.stores import GraphReader, GraphReadOptions
+from kg_contracts.stores import GraphReader, GraphReadOptions, UnsupportedCapabilityError
 
 
 @runtime_checkable
@@ -89,29 +89,48 @@ class ReaderAssertionCatalog:
 
     ``get_assertion`` delegates to ``GraphReader.get_assertion`` with history
     switches on — live, no snapshot, indexed when the adapter advertises
-    ``supports_assertion_lookup``. ``iter_assertions`` still scans, because
-    reverse derivation lineage has no upstream index; it is only used by
-    ``ProvenanceService.impacted_by``.
+    ``supports_assertion_lookup``. If the adapter raises
+    ``UnsupportedCapabilityError`` / ``NotImplementedError`` it falls back to a
+    scan for the rest of its life. ``iter_assertions`` always scans, because
+    reverse derivation lineage has no upstream index.
     """
 
     def __init__(self, reader: GraphReader, options: GraphReadOptions = HISTORY) -> None:
-        if not hasattr(reader, "get_assertion"):
-            raise TypeError(
-                "reader lacks get_assertion (kg_contracts < 2.2.0); use GraphAssertionIndex"
-            )
         self._reader = reader
         self._options = options
+        self._fallback: GraphAssertionIndex | None = None
 
     def get_assertion(self, assertion_id: str) -> Assertion | None:
-        return self._reader.get_assertion(assertion_id, self._options)
+        if self._fallback is None:
+            try:
+                return self._reader.get_assertion(assertion_id, self._options)
+            except (UnsupportedCapabilityError, NotImplementedError, AttributeError):
+                self._fallback = GraphAssertionIndex(self._reader, self._options)
+        return self._fallback.get_assertion(assertion_id)
 
     def iter_assertions(self) -> Iterator[Assertion]:
         return iter(tuple(_scan(self._reader, self._options).values()))
 
 
+def supports_native_lookup(reader: GraphReader) -> bool:
+    """True only when the adapter *advertises* ``supports_assertion_lookup``.
+
+    ``hasattr`` is not enough: ``GraphReader`` is a Protocol whose
+    ``get_assertion`` stub is inherited by subclasses that never implement it
+    (it would silently return ``None``).
+    """
+    caps = getattr(reader, "capabilities", None)
+    if not callable(caps):
+        return False
+    try:
+        return bool(getattr(caps(), "supports_assertion_lookup", False))
+    except Exception:  # capability probing must never break provenance reads
+        return False
+
+
 def catalog_for(reader: GraphReader) -> AssertionCatalog:
-    """The best catalog for ``reader``: direct lookup when available, else a scan."""
-    if hasattr(reader, "get_assertion"):
+    """Direct lookup when the reader advertises it; otherwise a scan (ADR-0004)."""
+    if supports_native_lookup(reader):
         return ReaderAssertionCatalog(reader)
     return GraphAssertionIndex(reader)
 

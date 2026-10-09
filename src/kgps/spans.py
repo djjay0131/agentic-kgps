@@ -41,8 +41,8 @@ def span_for(evidence: Evidence) -> SourceSpan | None:
     """The best available span for ``evidence``: typed first, then the locator."""
     parsed = parse_span(evidence.source_locator)
     typed = getattr(evidence, "span", None)
-    if typed is not None:
-        locator = parsed.locator if parsed is not None else evidence.source_locator.split("#")[0]
+    if typed is not None and typed.end >= typed.start >= 0:
+        locator = parsed.locator if parsed is not None else evidence.source_locator
         return SourceSpan(
             locator=locator,
             chunk_index=parsed.chunk_index if parsed is not None else None,

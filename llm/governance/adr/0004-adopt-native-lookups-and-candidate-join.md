@@ -39,6 +39,17 @@ had no reverse index. Upstream has since shipped (agentic-kgis v0.5.0/v0.6.0):
    `UNTYPED_SPAN`, `REDACTED_EVIDENCE` (via an optional `redaction()` on the
    evidence store), `UNRESOLVED_SUCCESSOR`.
 
+8. **`grounded` ⇔ at least one PRESENT grounding evidence resolves** (amends
+   ADR-0003): `DANGLING_EVIDENCE_REF` is reported but no longer blocking on its
+   own — when nothing else grounds the assertion, `NO_PRESENT_EVIDENCE` blocks.
+   This keeps `grounded` consistent with `present_evidence`.
+9. Native lookup is chosen only when the adapter **advertises**
+   `supports_assertion_lookup` (a Protocol stub would silently return `None`);
+   `UnsupportedCapabilityError`/`NotImplementedError` fall back to a scan.
+10. Every store read is wrapped: an exception becomes a non-blocking
+    `STORE_ERROR` gap (ADR-0003: reads never raise); `ImpactReport.errors`
+    carries them for reverse lineage.
+
 The runtime floor becomes `agentic-kgis>=0.6.0` (kg_contracts 2.3.0).
 
 ## Rationale
